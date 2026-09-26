@@ -34,8 +34,16 @@ else()
         MESSAGE("${CMAKE_SOURCE_DIR}")
         get_filename_component(SRC_DIR "${CMAKE_SOURCE_DIR}" DIRECTORY)
         #Get current Branch
+        # Destiny local fix: without an explicit WORKING_DIRECTORY, these
+        # execute_process() calls run relative to whatever directory the
+        # invoking shell happened to be in when it launched cmake, NOT
+        # CMAKE_SOURCE_DIR -- in a multi-repo checkout (this project's own
+        # titan/hunter submodule layout) that silently picked up a
+        # *different* git repo's HEAD if the shell's cwd was elsewhere.
+        # Confirmed by hand while wiring version embedding into --version.
         execute_process(
                 COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 OUTPUT_VARIABLE GIT_DESCRIBE_BRANCH
                 RESULT_VARIABLE GIT_DESCRIBE_ERROR_CODE
                 OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -43,6 +51,7 @@ else()
         # Gather current commit
         execute_process(
                 COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 OUTPUT_VARIABLE GIT_DESCRIBE_VERSION
                 RESULT_VARIABLE GIT_DESCRIBE_ERROR_CODE
                 OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -50,6 +59,7 @@ else()
         # Check if Dirty
         execute_process(
                 COMMAND ${GIT_EXECUTABLE} diff --quiet --exit-code
+                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 RESULT_VARIABLE GIT_IS_DIRTY
                 OUTPUT_STRIP_TRAILING_WHITESPACE
         )
@@ -62,6 +72,18 @@ else()
             if(GIT_IS_DIRTY)
                 set(PROJECT_VERSION ${PROJECT_VERSION}-dirty)
                 MESSAGE("Git tree is dirty!")
+            endif()
+            # Destiny local fix (agent.md section 2.4): GITHUB_COMMIT/GITHUB_BRANCH
+            # were only ever populated from $ENV{COMMIT}/$ENV{BRANCH} (CI-only),
+            # so a local dev build's --version / diagnostics screen always showed
+            # an empty "commit: " even though PROJECT_VERSION itself correctly
+            # embedded the short SHA via GIT_DESCRIBE_VERSION above. Fall back to
+            # the same git info we already computed for local (non-CI) builds.
+            if(NOT DEFINED GITHUB_COMMIT OR GITHUB_COMMIT STREQUAL "")
+                set(GITHUB_COMMIT "${GIT_DESCRIBE_VERSION}")
+            endif()
+            if(NOT DEFINED GITHUB_BRANCH OR GITHUB_BRANCH STREQUAL "")
+                set(GITHUB_BRANCH "${GIT_DESCRIBE_BRANCH}")
             endif()
         else()
             MESSAGE(ERROR ": Got git error while fetching tags: ${GIT_DESCRIBE_ERROR_CODE}")
