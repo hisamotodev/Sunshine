@@ -2,6 +2,9 @@
  * @file src/platform/windows/display_wgc.cpp
  * @brief Definitions for WinRT Windows.Graphics.Capture API
  */
+// standard includes
+#include <cstdlib>
+
 // platform includes
 #include <dxgi1_2.h>
 
@@ -122,14 +125,31 @@ namespace platf::dxgi {
       return -1;
     }
 
-    DXGI_OUTPUT_DESC output_desc;
     uwp_device = d3d_comhandle.as<winrt::IDirect3DDevice>();
-    display->output->GetDesc(&output_desc);
 
-    auto monitor_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-    if (monitor_factory == nullptr || FAILED(status = monitor_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
-      BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire display: [0x"sv << util::hex(status).to_string_view() << ']';
+    auto capture_item_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+    if (capture_item_factory == nullptr) {
+      BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire capture item factory"sv;
       return -1;
+    }
+
+    // PoC 3 (agent.md section 7): capture a specific HWND instead of the
+    // display's monitor when one has been requested. Reuses the same D3D11
+    // device, frame pool, and frame-delivery machinery as monitor capture --
+    // only the GraphicsCaptureItem's target differs. See
+    // docs/research/poc3-titan-hwnd-capture.md.
+    if (target_hwnd) {
+      if (FAILED(status = capture_item_factory->CreateForWindow(target_hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
+        BOOST_LOG(error) << "Failed to create capture item for HWND [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+    } else {
+      DXGI_OUTPUT_DESC output_desc;
+      display->output->GetDesc(&output_desc);
+      if (FAILED(status = capture_item_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
+        BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire display: [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
     }
 
     if (config.dynamicRange) {
@@ -253,7 +273,21 @@ namespace platf::dxgi {
   }
 
   int display_wgc_ram_t::init(const ::video::config_t &config, const std::string &display_name) {
-    if (display_base_t::init(config, display_name) || dup.init(this, config)) {
+    if (display_base_t::init(config, display_name)) {
+      return -1;
+    }
+
+    // PoC 3 test hook (agent.md section 7 / 19), NOT the real remote-run /
+    // apps.json HWND resolution planned for section 8 -- that needs proper
+    // process/window resolution logic (section 7.3). This is just enough to
+    // validate the capture path end-to-end against a real Moonlight stream.
+    // See docs/research/poc3-titan-hwnd-capture.md.
+    if (const char *hwnd_hex = std::getenv("SUNSHINE_POC_CAPTURE_HWND")) {
+      dup.target_hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::strtoull(hwnd_hex, nullptr, 16)));
+      BOOST_LOG(info) << "PoC 3: SUNSHINE_POC_CAPTURE_HWND set, capturing HWND "sv << hwnd_hex << " instead of the display"sv;
+    }
+
+    if (dup.init(this, config)) {
       return -1;
     }
 

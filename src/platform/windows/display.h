@@ -724,6 +724,16 @@ namespace platf::dxgi {
     ~wgc_capture_t();
 
     /**
+     * @brief Target window for capture, in place of the display's monitor.
+     *
+     * PoC 3 (agent.md section 7 / 19): when non-null, init() captures this
+     * HWND via IGraphicsCaptureItemInterop::CreateForWindow() instead of
+     * capturing the display's monitor via CreateForMonitor(). Must be set
+     * before calling init(). See docs/research/poc3-titan-hwnd-capture.md.
+     */
+    HWND target_hwnd = nullptr;
+
+    /**
      * @brief Initialize D3D cursor rendering resources for GPU capture.
      *
      * @param display Display object or identifier associated with the operation.

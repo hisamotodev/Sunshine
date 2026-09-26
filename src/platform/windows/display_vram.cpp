@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <cmath>
+#include <cstdlib>
 
 // platform includes
 #include <d3dcompiler.h>
@@ -1901,7 +1902,18 @@ namespace platf::dxgi {
   }
 
   int display_wgc_vram_t::init(const ::video::config_t &config, const std::string &display_name) {
-    if (display_base_t::init(config, display_name) || dup.init(this, config)) {
+    if (display_base_t::init(config, display_name)) {
+      return -1;
+    }
+
+    // PoC 3 test hook -- see the identical comment in display_wgc_ram_t::init
+    // (display_wgc.cpp) and docs/research/poc3-titan-hwnd-capture.md.
+    if (const char *hwnd_hex = std::getenv("SUNSHINE_POC_CAPTURE_HWND")) {
+      dup.target_hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::strtoull(hwnd_hex, nullptr, 16)));
+      BOOST_LOG(info) << "PoC 3: SUNSHINE_POC_CAPTURE_HWND set, capturing HWND "sv << hwnd_hex << " instead of the display"sv;
+    }
+
+    if (dup.init(this, config)) {
       return -1;
     }
 
