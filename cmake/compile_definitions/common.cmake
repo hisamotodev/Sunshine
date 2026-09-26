@@ -107,6 +107,11 @@ if(WIN32)
     function(add_nvenc_sdk_implementation target_name sdk_version sdk_include_dir)
         add_library(${target_name} OBJECT ${NVENC_IMPLEMENTATION_SOURCES})
         target_include_directories(${target_name} BEFORE PRIVATE "${sdk_include_dir}")
+        # NVENC_IMPLEMENTATION_SOURCES includes src/nvenc/nvenc_base.h, which pulls in
+        # src/logging.h (boost/log/...) and src/platform/common.h (boost/core/...), but
+        # this object library never linked Boost, so those headers weren't found under
+        # MinGW/GCC (Titan build-environment fix, not an application code change).
+        target_link_libraries(${target_name} PRIVATE ${Boost_LIBRARIES})
         target_compile_definitions(${target_name} PRIVATE
                 NVENC_FACTORY_SUFFIX=${sdk_version}
                 NVENC_NAMESPACE=nvenc_${sdk_version}
