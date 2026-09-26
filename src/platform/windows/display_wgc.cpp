@@ -143,6 +143,20 @@ namespace platf::dxgi {
         BOOST_LOG(error) << "Failed to create capture item for HWND [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
+      // A window's size has nothing to do with the monitor's mode that
+      // display_base_t::init() just computed width/height/env_* from --
+      // without this, display_wgc_ram_t::snapshot()'s "did the source
+      // texture size change" check (display_wgc.cpp, compares against
+      // `width`/`height`) never matches the window's real captured size and
+      // reinits on every single frame. This is the video-pipeline half of
+      // the sync agent.md section 7.8 calls for; the FramePool half is
+      // already handled in on_frame_arrived() below. See
+      // docs/research/poc3-titan-hwnd-capture.md.
+      auto captured_size = item.Size();
+      display->width = display->width_before_rotation = display->env_width = captured_size.Width;
+      display->height = display->height_before_rotation = display->env_height = captured_size.Height;
+      display->offset_x = 0;
+      display->offset_y = 0;
     } else {
       DXGI_OUTPUT_DESC output_desc;
       display->output->GetDesc(&output_desc);
