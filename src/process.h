@@ -75,6 +75,14 @@ namespace proc {
     std::string output;  ///< Captured output from the launched process.
     std::string image_path;  ///< Image path.
     std::string id;  ///< Stable identifier for the configured application.
+
+    /**
+     * @brief Identifier used by Hunter's `--remote-run=<path>` to resolve this
+     * app, per agent.md section 8. Distinct from `cmd`/`image_path`: this is
+     * compared against the client-supplied path string to find an App ID, it
+     * is never itself executed. Empty when the app doesn't support remote-run.
+     */
+    std::string remote_path;  ///< Remote-run path identifier (see agent.md section 8).
     bool elevated;  ///< Whether the process should be launched elevated.
     bool auto_detach;  ///< Whether the process should detach automatically.
     bool wait_all;  ///< Whether Sunshine waits for all child processes.

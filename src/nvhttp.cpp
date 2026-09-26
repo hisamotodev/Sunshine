@@ -15,6 +15,7 @@
 #include <utility>
 
 // lib includes
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -1329,6 +1330,72 @@ namespace nvhttp {
   }
 
   /**
+   * @brief Resolve a Hunter `--remote-run=<path>` request to a registered App ID.
+   *
+   * Per agent.md section 8.2: this endpoint only resolves `remote_path` to an
+   * App ID (and name); it does **not** call `proc::proc.execute()` itself.
+   * `launch()` above already refuses a second launch while an app is running
+   * (`"An app is already running on this host"`), so if this handler also
+   * launched the process, the client's subsequent real `/launch` call (which
+   * carries the actual GameStream crypto material `make_launch_session()`
+   * needs -- `rikey`/`rikeyid`/the mTLS client cert -- none of which a bare
+   * pre-launch trigger has) would simply fail. Reusing the existing
+   * `/launch` -> `execute()` path for the real launch, exactly as agent.md
+   * section 23 decision #6 specifies ("既存 Sunshine process execution を
+   * 再利用する"), avoids inventing a second, less-tested execution path.
+   * See docs/research/poc6-remote-run.md.
+   *
+   * @param response HTTP response object to populate.
+   * @param request HTTP request data from the client.
+   */
+  void remote_run(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    nlohmann::json output_tree;
+    auto send = [&](SimpleWeb::StatusCode status_code) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/json");
+      response->write(status_code, output_tree.dump(), headers);
+      response->close_connection_after_response = true;
+    };
+
+    std::stringstream ss;
+    ss << request->content.rdbuf();
+
+    nlohmann::json input_tree;
+    try {
+      input_tree = nlohmann::json::parse(ss);
+    } catch (const std::exception &e) {
+      output_tree["error"] = "REMOTE_RUN_INVALID_REQUEST";
+      output_tree["message"] = e.what();
+      send(SimpleWeb::StatusCode::client_error_bad_request);
+      return;
+    }
+
+    std::string remote_path = input_tree.value("remote_path", "");
+    if (remote_path.empty()) {
+      output_tree["error"] = "REMOTE_RUN_INVALID_REQUEST";
+      output_tree["message"] = "Missing 'remote_path'";
+      send(SimpleWeb::StatusCode::client_error_bad_request);
+      return;
+    }
+
+    for (auto &app : proc::proc.get_apps()) {
+      if (!app.remote_path.empty() && boost::iequals(app.remote_path, remote_path)) {
+        output_tree["app_id"] = app.id;
+        output_tree["name"] = app.name;
+        output_tree["state"] = "resolved";
+        send(SimpleWeb::StatusCode::success_ok);
+        return;
+      }
+    }
+
+    BOOST_LOG(warning) << "Remote-run: no registered app matches remote_path ["sv << remote_path << ']';
+    output_tree["error"] = "REMOTE_RUN_NOT_REGISTERED";
+    send(SimpleWeb::StatusCode::client_error_not_found);
+  }
+
+  /**
    * @brief Launch the requested application for a GameStream session.
    *
    * @param host_audio Host audio.
@@ -1709,6 +1776,7 @@ namespace nvhttp {
       resume(host_audio, resp, req);
     };
     https_server.resource["^/cancel$"]["GET"] = cancel;
+    https_server.resource["^/api/custom/remote-run$"]["POST"] = remote_run;
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);
