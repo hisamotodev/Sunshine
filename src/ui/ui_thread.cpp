@@ -16,6 +16,8 @@
 
 // local includes
 #include "app_state.h"
+#include "screen_first_run.h"
+#include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "ui_apps.h"
@@ -67,7 +69,9 @@ namespace ui {
         ImGui::Separator();
       }
 
-      if (ImGui::BeginTabBar("tabs")) {
+      if (config::sunshine.username.empty()) {
+        render_first_run_screen();
+      } else if (ImGui::BeginTabBar("tabs")) {
         if (ImGui::BeginTabItem("Settings")) {
           render_settings_tab(state);
           ImGui::EndTabItem();

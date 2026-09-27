@@ -89,6 +89,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/ui/ui_settings.cpp"
         "${CMAKE_SOURCE_DIR}/src/ui/ui_apps.h"
         "${CMAKE_SOURCE_DIR}/src/ui/ui_apps.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ui/screen_first_run.h"
+        "${CMAKE_SOURCE_DIR}/src/ui/screen_first_run.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Client.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"

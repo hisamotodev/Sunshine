@@ -601,9 +601,11 @@ namespace confighttp {
       return false;
     }
 
-    // If credentials are shown, redirect the user to a /welcome page
+    // No credentials configured yet - the embedded UI's first-run screen is now the
+    // only supported way to set them (see ui::screen_first_run), so /api/* just fails
+    // cleanly instead of assuming a browser exists to follow a /welcome redirect.
     if (config::sunshine.username.empty()) {
-      send_redirect(response, request, "/welcome");
+      send_unauthorized(response, request);
       return false;
     }
 
