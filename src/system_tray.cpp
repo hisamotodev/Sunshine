@@ -6,30 +6,36 @@
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
 
   /**
+   * @def TRAY_ASSETS_DIR
+   * @brief Directory containing the tray/notification icons. Plain static assets
+   *        (not part of the WebUI's Vue build), so the tray never depends on npm/Vite.
+   */
+  #define TRAY_ASSETS_DIR SUNSHINE_ASSETS_DIR "/tray/"
+  /**
    * @def TRAY_ICON
    * @brief Path to the default system tray icon.
    */
-  #define TRAY_ICON WEB_DIR "images/logo-sunshine.svg"
+  #define TRAY_ICON TRAY_ASSETS_DIR "logo-sunshine.svg"
   /**
    * @def TRAY_ICON_PLAYING
    * @brief Path to the system tray icon used while streaming.
    */
-  #define TRAY_ICON_PLAYING WEB_DIR "images/sunshine-playing.svg"
+  #define TRAY_ICON_PLAYING TRAY_ASSETS_DIR "sunshine-playing.svg"
   /**
    * @def TRAY_ICON_PAUSING
    * @brief Path to the system tray icon used while streaming is paused.
    */
-  #define TRAY_ICON_PAUSING WEB_DIR "images/sunshine-pausing.svg"
+  #define TRAY_ICON_PAUSING TRAY_ASSETS_DIR "sunshine-pausing.svg"
   /**
    * @def TRAY_ICON_LOCKED
    * @brief Path to the system tray icon used for pairing requests.
    */
-  #define TRAY_ICON_LOCKED WEB_DIR "images/sunshine-locked.svg"
+  #define TRAY_ICON_LOCKED TRAY_ASSETS_DIR "sunshine-locked.svg"
   /**
    * @def TRAY_ICON_VIRTUALHID
    * @brief Path to the Virtual HID Driver notification icon.
    */
-  #define TRAY_ICON_VIRTUALHID WEB_DIR "images/logo-libvirtualhid.svg"
+  #define TRAY_ICON_VIRTUALHID TRAY_ASSETS_DIR "logo-libvirtualhid.svg"
 
   #if defined(_WIN32)
     /**
@@ -80,6 +86,7 @@
   #include "system_tray.h"
   #ifdef _WIN32
     #include "platform/windows/utf_utils.h"
+    #include "ui/ui_thread.h"
   #endif
 
 using namespace std::literals;
@@ -182,7 +189,11 @@ namespace system_tray {
 
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Opening UI from system tray"sv;
+#ifdef _WIN32
+    ui::show();
+#else
     launch_ui();
+#endif
   }
 
   void tray_donate_github_cb([[maybe_unused]] struct tray_menu *item) {

@@ -33,3 +33,6 @@ else()
         INTERFACE_INCLUDE_DIRECTORIES "${minhook-detours_SOURCE_DIR}/src"
     )
 endif()
+
+# Embedded ImGui management UI (SDL3 + Dear ImGui)
+include("${CMAKE_MODULE_PATH}/dependencies/ui.cmake")

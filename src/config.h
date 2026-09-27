@@ -370,6 +370,10 @@ namespace config {
 
     std::string config_file;  ///< Path to the active Sunshine configuration file.
 
+    std::string instance_name;  ///< Stable identifier for this Titan instance, used for per-instance
+                                 ///< AppData/Local discovery data (see platf::appdata_local()). Falls
+                                 ///< back to the config file's stem, then "default", when unset.
+
     /**
      * @brief Command-line options parsed before configuration loading.
      */

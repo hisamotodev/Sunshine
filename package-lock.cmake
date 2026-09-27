@@ -46,3 +46,34 @@ CPMDeclarePackage(Boost
         URL_HASH SHA256=${BOOST_SHA256}
         DOWNLOAD_ONLY YES
 )
+
+# SDL (embedded ImGui management UI, Windows-only - see cmake/dependencies/ui.cmake)
+# renovate: datasource=github-tags depName=libsdl-org/SDL
+# versioning=regex:^release-(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
+set(SDL3_VERSION 3.4.12)
+CPMDeclarePackage(SDL3
+        NAME SDL3
+        VERSION ${SDL3_VERSION}
+        GITHUB_REPOSITORY libsdl-org/SDL
+        GIT_TAG release-${SDL3_VERSION}
+        OPTIONS
+            "SDL_SHARED OFF"
+            "SDL_STATIC ON"
+            "SDL_TESTS OFF"
+            "SDL_TEST_LIBRARY OFF"
+            "SDL_INSTALL OFF"
+            "SDL_X11_XSCRNSAVER OFF"
+)
+
+# Dear ImGui (embedded management UI, Windows-only - see cmake/dependencies/ui.cmake)
+# renovate: datasource=github-tags depName=ocornut/imgui
+# versioning=regex:^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$
+set(IMGUI_VERSION 1.92.8)
+CPMDeclarePackage(imgui
+        NAME imgui
+        VERSION ${IMGUI_VERSION}
+        GITHUB_REPOSITORY ocornut/imgui
+        GIT_TAG v${IMGUI_VERSION}
+        DOWNLOAD_ONLY YES
+        FORCE YES
+)

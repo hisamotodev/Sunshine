@@ -881,6 +881,7 @@ namespace config {
     {},  // Password
     {},  // Password Salt
     platf::appdata().string() + "/sunshine.conf",  // config file
+    {},  // instance_name
     {},  // cmd args
     47989,  // Base port number
     "ipv4",  // Address family
@@ -1726,6 +1727,7 @@ namespace config {
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
     string_f(vars, "sunshine_name", nvhttp.sunshine_name);
+    string_f(vars, "instance_name", config::sunshine.instance_name);
     path_f(vars, "log_path", config::sunshine.log_file);
     path_f(vars, "file_state", nvhttp.file_state);
 

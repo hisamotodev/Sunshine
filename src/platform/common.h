@@ -880,6 +880,23 @@ namespace platf {
 
   std::filesystem::path appdata();
 
+#ifdef _WIN32
+  /**
+   * @brief Return the per-instance discovery directory under %LOCALAPPDATA%.
+   *
+   * Unlike appdata(), which every instance of the same exe resolves identically,
+   * this is keyed by instance_name so multiple simultaneous Titan instances each
+   * get a distinct directory. Used only for cross-instance discovery data (see
+   * the embedded UI's instance manifest) - it does not replace appdata()'s
+   * config/state directory.
+   *
+   * @param instance_name Stable identifier for this Titan instance (config::sunshine.instance_name).
+   * @return Path to `%LOCALAPPDATA%\Titan\<instance_name>\`, created if missing. Empty if
+   *         %LOCALAPPDATA% is not set for the current session (e.g. some service accounts).
+   */
+  std::filesystem::path appdata_local(const std::string &instance_name);
+#endif
+
   /**
    * @brief Return the hardware MAC address associated with a network address.
    *

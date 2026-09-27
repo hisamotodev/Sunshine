@@ -42,6 +42,9 @@
 #include "system_tray.h"
 #include "upnp.h"
 #include "video.h"
+#ifdef _WIN32
+  #include "ui/ui_thread.h"
+#endif
 
 using namespace std::literals;
 
@@ -282,6 +285,29 @@ int main(int argc, char *argv[]) {
   }
 
 #ifdef _WIN32
+  {
+    // Resolve a stable per-instance identity for AppData/Local discovery data (used by the
+    // embedded UI to find other running Titan instances). Existing multi-instance setups
+    // (see CLAUDE.md) give every instance its own subdirectory but often name the .conf
+    // itself identically (e.g. "instance-A/sunshine.conf", "instance-B/sunshine.conf"), so
+    // the containing directory name - not the file's own stem - is what is actually unique;
+    // fall back to the stem only when the config path has no meaningful parent directory.
+    // "instance_name" in the .conf (or as a key=value command-line override) can set it explicitly.
+    auto instance_name = config::sunshine.instance_name;
+    if (instance_name.empty()) {
+      std::filesystem::path config_path {config::sunshine.config_file};
+      auto parent_name = config_path.parent_path().filename().string();
+      instance_name = !parent_name.empty() ? parent_name : config_path.stem().string();
+    }
+
+    auto instance_local_dir = platf::appdata_local(instance_name);
+    if (instance_local_dir.empty()) {
+      BOOST_LOG(warning) << "Could not resolve %LOCALAPPDATA% for instance '"sv << instance_name << "'; cross-instance discovery data will be unavailable"sv;
+    } else {
+      BOOST_LOG(info) << "Instance name: "sv << instance_name << " (local data: "sv << instance_local_dir.string() << ')';
+    }
+  }
+
   config::select_all_gamepad_drivers_if_licensed(lvh::get_license_status().license.licensed());
 #endif
 
@@ -405,6 +431,9 @@ int main(int argc, char *argv[]) {
 
     if (tray_is_enabled && config::sunshine.system_tray) {
       system_tray::end_tray();
+#ifdef _WIN32
+      ui::stop();
+#endif
     }
 
     display_device_deinit_guard = nullptr;
@@ -425,6 +454,9 @@ int main(int argc, char *argv[]) {
 
     if (tray_is_enabled && config::sunshine.system_tray) {
       system_tray::end_tray();
+#ifdef _WIN32
+      ui::stop();
+#endif
     }
 
     display_device_deinit_guard = nullptr;
@@ -510,6 +542,7 @@ int main(int argc, char *argv[]) {
     // For now we will keep the Windows tray icon on a separate thread.
     // Ideally, we would run the system tray on the main thread for all platforms.
     system_tray::init_tray_threaded();
+    ui::start();
 #else
     system_tray::init_tray();
 #endif

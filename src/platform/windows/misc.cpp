@@ -152,6 +152,19 @@ namespace platf {
     return std::filesystem::path {sunshine_path}.remove_filename() / L"config"sv;
   }
 
+  std::filesystem::path appdata_local(const std::string &instance_name) {
+    WCHAR local_appdata[MAX_PATH];
+    auto len = GetEnvironmentVariableW(L"LOCALAPPDATA", local_appdata, _countof(local_appdata));
+    if (len == 0 || len >= _countof(local_appdata)) {
+      return {};
+    }
+
+    auto dir = std::filesystem::path {local_appdata} / L"Titan" / instance_name;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+  }
+
   std::string from_sockaddr(const sockaddr *const socket_address) {
     char data[INET6_ADDRSTRLEN] = {};
 
