@@ -211,7 +211,7 @@ namespace system_tray {
   #ifdef _WIN32
   void tray_virtualhid_license_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Opening Virtual HID Driver license settings from system tray"sv;
-    launch_ui(config::input.gamepad_driver == config::GAMEPAD_DRIVER_VIGEMBUS ? "/config#gamepad_driver" : "/troubleshooting#virtualhid-license");
+    ui::show(config::input.gamepad_driver == config::GAMEPAD_DRIVER_VIGEMBUS ? ui::screen_e::settings : ui::screen_e::virtualhid);
   }
 
   void tray_virtualhid_download_cb([[maybe_unused]] struct tray_menu *item) {
@@ -498,7 +498,7 @@ namespace system_tray {
         "Choose a driver in Input settings. Virtual HID Driver is a paid upgrade; ViGEmBus is limited and has reached end of life.";
       tray.notification_icon = tray.allIconPaths[4];
       tray.notification_cb = []() {
-        launch_ui("/config#gamepad_driver");
+        ui::show(ui::screen_e::settings);
       };
     } else if (config::input.gamepad_driver != config::GAMEPAD_DRIVER_VIGEMBUS && notify_if_unlicensed && !license.licensed()) {
       tray.notification_title = "Virtual HID Driver License";
@@ -506,7 +506,7 @@ namespace system_tray {
         "Get or manage a license, or use the limited, end-of-life ViGEmBus driver.";
       tray.notification_icon = tray.allIconPaths[4];
       tray.notification_cb = []() {
-        launch_ui("/troubleshooting#virtualhid-license");
+        ui::show(ui::screen_e::virtualhid);
       };
     }
 
@@ -544,7 +544,7 @@ namespace system_tray {
     tray.notification_text = notification_text.c_str();
     tray.notification_icon = tray.allIconPaths[4];
     tray.notification_cb = []() {
-      launch_ui("/troubleshooting#virtualhid");
+      ui::show(ui::screen_e::virtualhid);
     };
 
     BOOST_LOG(warning) << notification_text;
@@ -888,7 +888,11 @@ namespace system_tray {
     tray.notification_icon = tray.allIconPaths[1];
     tray.tooltip = PROJECT_NAME;
     tray.notification_cb = []() {
+#ifdef _WIN32
+      ui::show(ui::screen_e::pairing);
+#else
       launch_ui("/pin");
+#endif
     };
     tray_update(&tray);
   }

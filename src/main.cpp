@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <codecvt>
 #include <csignal>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -179,6 +180,20 @@ void mainThreadLoop(const std::shared_ptr<safe::event_t<bool>> &shutdown_event) 
  * @return Process or platform callback exit code.
  */
 int main(int argc, char *argv[]) {
+#ifdef _WIN32
+  // sunshine is a WIN32_EXECUTABLE (no console of its own, see cmake/targets/windows.cmake)
+  // so the embedded UI's tray icon can replace the always-on console window. Attach to
+  // an existing console when launched from one (e.g. `sunshine --help` from a terminal),
+  // matching the pattern Hunter's Moonlight.exe already uses for the same reason.
+  if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+    FILE *reopened = nullptr;
+    freopen_s(&reopened, "CONOUT$", "w", stdout);
+    freopen_s(&reopened, "CONOUT$", "w", stderr);
+    freopen_s(&reopened, "CONIN$", "r", stdin);
+    std::ios::sync_with_stdio();
+  }
+#endif
+
 #ifdef __linux__
   const bool privileged_execution = getauxval(AT_SECURE) != 0 || platf::has_elevated_privileges(true);
   if (privileged_execution && !platf::sanitize_process_environment()) {
@@ -497,8 +512,10 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(fatal) << "HTTP interface failed to initialize"sv;
 
 #ifdef _WIN32
+    // No visible console to keep open for the user to read this (see the WIN32_EXECUTABLE
+    // note above) - BOOST_LOG(fatal) already wrote it to log_path, which the embedded UI's
+    // Logs tab surfaces.
     BOOST_LOG(fatal) << "To relaunch Sunshine successfully, use the shortcut in the Start Menu. Do not run Sunshine.exe manually."sv;
-    std::this_thread::sleep_for(10s);
 #endif
 
     return -1;

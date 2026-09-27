@@ -42,6 +42,7 @@ namespace ui {
 
     std::atomic<visibility_request_e> requested_visibility {visibility_request_e::none};  ///< Pending show()/hide() request from another thread.
     std::atomic<bool> window_visible {false};  ///< Whether the window is currently shown.
+    std::atomic<screen_e> requested_screen {screen_e::none};  ///< Pending show(screen) tab-jump request.
 
     std::jthread &worker_thread() {
       static std::jthread thread;
@@ -74,10 +75,15 @@ namespace ui {
         ImGui::Separator();
       }
 
+      const auto jump_to = requested_screen.exchange(screen_e::none);
+      const auto select_flags = [jump_to](screen_e screen) {
+        return jump_to == screen ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+      };
+
       if (config::sunshine.username.empty()) {
         render_first_run_screen();
       } else if (ImGui::BeginTabBar("tabs")) {
-        if (ImGui::BeginTabItem("Settings")) {
+        if (ImGui::BeginTabItem("Settings", nullptr, select_flags(screen_e::settings))) {
           render_settings_tab(state);
           ImGui::EndTabItem();
         }
@@ -85,7 +91,7 @@ namespace ui {
           render_apps_tab(state);
           ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Pairing")) {
+        if (ImGui::BeginTabItem("Pairing", nullptr, select_flags(screen_e::pairing))) {
           render_pairing_screen();
           ImGui::EndTabItem();
         }
@@ -101,7 +107,7 @@ namespace ui {
           render_troubleshooting_screen();
           ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Virtual HID")) {
+        if (ImGui::BeginTabItem("Virtual HID", nullptr, select_flags(screen_e::virtualhid))) {
           render_virtualhid_screen();
           ImGui::EndTabItem();
         }
@@ -247,7 +253,10 @@ namespace ui {
     thread.join();
   }
 
-  void show() {
+  void show(screen_e screen) {
+    if (screen != screen_e::none) {
+      requested_screen.store(screen);
+    }
     requested_visibility.store(visibility_request_e::show);
   }
 

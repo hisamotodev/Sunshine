@@ -11,6 +11,17 @@
 
 namespace ui {
   /**
+   * @brief Which tab show() should jump to, for tray actions that target a specific
+   *        screen (e.g. the pairing PIN notification).
+   */
+  enum class screen_e {
+    none,  ///< Leave whichever tab is currently selected.
+    settings,
+    pairing,
+    virtualhid,
+  };
+
+  /**
    * @brief Starts the embedded UI's background thread. The window is created
    *        hidden; call show() to reveal it. Safe to call once during startup.
    */
@@ -22,10 +33,10 @@ namespace ui {
   void stop();
 
   /**
-   * @brief Requests the embedded UI window be shown and raised to the foreground.
-   *        Safe to call from any thread.
+   * @brief Requests the embedded UI window be shown and raised to the foreground,
+   *        optionally jumping to a specific tab. Safe to call from any thread.
    */
-  void show();
+  void show(screen_e screen = screen_e::none);
 
   /**
    * @brief Requests the embedded UI window be hidden. Safe to call from any thread.
