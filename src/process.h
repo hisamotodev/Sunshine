@@ -93,6 +93,14 @@ namespace proc {
     std::string window_class;  ///< Target window class for HWND capture (see agent.md section 7/8).
 
     /**
+     * @brief Executable name (not full path) whose audio should be captured
+     * via process-scoped WASAPI loopback (agent.md section 9), instead of
+     * the default system-wide loopback. Experimental -- see
+     * docs/research/poc2-process-loopback-audio.md.
+     */
+    std::string audio_process;  ///< Target process name for process-loopback audio capture (see agent.md section 9).
+
+    /**
      * @brief Derived from `window_class` at parse time: whether this app
      * should be captured via a resolved HWND (window_capture.h) rather than
      * the display's monitor.

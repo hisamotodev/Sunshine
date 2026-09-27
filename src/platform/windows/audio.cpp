@@ -17,6 +17,7 @@
 #include <synchapi.h>
 
 // local includes
+#include "audio_process_loopback.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -985,6 +986,14 @@ namespace platf::audio {
      * @return Microphone capture object for the requested audio layout.
      */
     std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous_audio, [[maybe_unused]] bool host_audio_enabled) override {
+      // agent.md section 9: prefer process-scoped loopback capture when the
+      // running app configured one (apps.json `audio-process`). Falls back
+      // to the ordinary system-wide loopback path below on any failure --
+      // see audio_process_loopback.h, EXPERIMENTAL/unverified.
+      if (auto process_mic = process_loopback::try_create(frame_size, channels, continuous_audio)) {
+        return process_mic;
+      }
+
       auto mic = std::make_unique<mic_wasapi_t>();
 
       // Prefer the sink that was assigned to this capture session since it accounts

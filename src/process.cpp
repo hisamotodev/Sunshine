@@ -39,6 +39,9 @@
   // window_capture::begin_resolution()/clear() (agent.md sections 7/8)
   #include "platform/windows/window_capture.h"
 
+  // audio::process_loopback::set_target()/clear() (agent.md section 9)
+  #include "platform/windows/audio_process_loopback.h"
+
   // _SH constants for _wfsopen()
   #include <share.h>
 #endif
@@ -313,6 +316,13 @@ namespace proc {
           10s
         );
       }
+
+      if (!_app.audio_process.empty()) {
+        platf::audio::process_loopback::set_target(
+          (std::uintptr_t) _process_group.native_handle(),
+          utf_utils::from_utf8(_app.audio_process)
+        );
+      }
 #endif
     }
 
@@ -364,6 +374,7 @@ namespace proc {
     placebo = false;
 #ifdef _WIN32
     platf::dxgi::window_capture::clear();
+    platf::audio::process_loopback::clear();
 #endif
     terminate_process_group(_process, _process_group, _app.exit_timeout);
     _process = boost::process::v1::child();
@@ -737,6 +748,7 @@ namespace proc {
         auto image_path = app_node.get_optional<std::string>("image-path"s);
         auto remote_path = app_node.get_optional<std::string>("remote-path"s);
         auto window_class = app_node.get_optional<std::string>("window-class"s);
+        auto audio_process = app_node.get_optional<std::string>("audio-process"s);
         auto working_dir = app_node.get_optional<std::string>("working-dir"s);
         auto elevated = app_node.get_optional<bool>("elevated"s);
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
@@ -814,6 +826,10 @@ namespace proc {
         if (window_class) {
           ctx.window_class = parse_env_val(this_env, *window_class);
           ctx.capture_window = true;
+        }
+
+        if (audio_process) {
+          ctx.audio_process = parse_env_val(this_env, *audio_process);
         }
 
         ctx.elevated = elevated.value_or(false);
