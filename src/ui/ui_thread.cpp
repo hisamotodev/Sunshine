@@ -16,7 +16,9 @@
 
 // local includes
 #include "app_state.h"
+#include "screen_clients.h"
 #include "screen_first_run.h"
+#include "screen_pairing.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -78,6 +80,14 @@ namespace ui {
         }
         if (ImGui::BeginTabItem("Apps")) {
           render_apps_tab(state);
+          ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Pairing")) {
+          render_pairing_screen();
+          ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Clients")) {
+          render_clients_screen();
           ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
