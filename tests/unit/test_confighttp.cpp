@@ -107,7 +107,6 @@ protected:
   std::filesystem::path test_web_dir;
   std::filesystem::path cert_file;
   std::filesystem::path key_file;
-  std::filesystem::path web_dir_test_file;
 
   void SetUp() override {
     BaseTest::SetUp();
@@ -144,21 +143,12 @@ protected:
       "https://[::1]"
     };
 
-    // Create test web directory in temp
+    // Create test directory in temp
     test_web_dir = std::filesystem::temp_directory_path() / "sunshine_test_confighttp";  // NOSONAR(cpp:S5443): safe for tests
-    std::filesystem::create_directories(test_web_dir / "web");
+    std::filesystem::create_directories(test_web_dir);
     confighttp::set_portal_token_path_provider_for_testing([this]() {
       return test_web_dir / "portal_token";
     });
-
-    // Create the SPA entry document in WEB_DIR, creating parent directories with proper permissions
-    std::filesystem::path web_dir_path(WEB_DIR);
-    std::filesystem::create_directories(web_dir_path);
-    web_dir_test_file = web_dir_path / "index.html";
-
-    std::ofstream test_html(web_dir_test_file);
-    test_html << "<html><head><title>Test Page</title></head><body><h1>Test Page Content</h1></body></html>";
-    test_html.close();
 
     // Write certificates to temp files (Simple-Web-Server expects file paths)
     cert_file = test_web_dir / "test_cert.pem";
@@ -282,32 +272,6 @@ protected:
       // If validation fails, validate_csrf_token already sent an error response
     };
 
-    // Add a route to test getPage (requires auth)
-    server->resource["^/page-test$"]["GET"] = [](
-                                                const std::shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> &response,
-                                                const std::shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> &request
-                                              ) {
-      // Call the actual confighttp::getPage function
-      // Note: This reads the SPA index from WEB_DIR, so the fixture creates it in SetUp().
-      confighttp::getPage(response, request, true, false);
-    };
-
-    // Add a route to test getPage without auth requirement
-    server->resource["^/page-noauth-test$"]["GET"] = [](
-                                                       const std::shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> &response,
-                                                       const std::shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> &request
-                                                     ) {
-      confighttp::getPage(response, request, false, false);
-    };
-
-    // Add a route to test getPage with redirect_if_username
-    server->resource["^/page-redirect-test$"]["GET"] = [](
-                                                         const std::shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> &response,
-                                                         const std::shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Request> &request
-                                                       ) {
-      confighttp::getPage(response, request, false, true);
-    };
-
     // Add a route to test getLocale
     server->resource["^/locale-test$"]["GET"] = [](
                                                   const std::shared_ptr<SimpleWeb::ServerBase<SimpleWeb::HTTPS>::Response> &response,
@@ -332,7 +296,6 @@ protected:
     server->resource["^/pairing-test$"]["GET"] = confighttp::getPendingPairings;
     server->resource["^/pairing-test$"]["POST"] = confighttp::savePin;
     server->resource["^/portal-token-reset-test$"]["POST"] = confighttp::resetPortalToken;
-    server->default_resource["GET"] = confighttp::getFallbackPage;
 
     // Start server
     server_thread = std::jthread([this]() {
@@ -374,11 +337,6 @@ protected:
     config::sunshine.locale = saved_locale;
     config::sunshine.csrf_allowed_origins = saved_csrf_allowed_origins;
     nvhttp::expire_pair_sessions(std::chrono::steady_clock::time_point::max());
-
-    // Clean up test HTML file from WEB_DIR
-    if (std::filesystem::exists(web_dir_test_file)) {
-      std::filesystem::remove(web_dir_test_file);
-    }
 
     if (std::filesystem::exists(test_web_dir)) {
       std::filesystem::remove_all(test_web_dir);
@@ -497,7 +455,6 @@ INSTANTIATE_TEST_SUITE_P(
   ConfigHttpEndpoints,
   AuthenticatedConfigHttpEndpointTest,
   testing::Values(
-    endpoint_request_t {"Page", "GET", "/page-test", ""},
     endpoint_request_t {"CsrfToken", "GET", "/csrf-token-test", ""},
     endpoint_request_t {"BrowseDirectory", "GET", "/browse-test", ""},
     endpoint_request_t {"PairingList", "GET", "/pairing-test", ""},
@@ -998,84 +955,16 @@ TEST_F(ConfigHttpTest, CSRFSameOriginExemptionWithReferer) {
   ASSERT_EQ(body, "csrf-valid");
 }
 
-// Test: confighttp::getPage() serves HTML with authentication
-TEST_F(ConfigHttpTest, GetPageWithAuth) {
-  SimpleWeb::CaseInsensitiveMultimap headers;
-  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
-
-  const auto response = client->request("GET", "/page-test", "", headers);
-  ASSERT_EQ(response->status_code, "200 OK");
-
-  // Check Content-Type
-  const auto content_type = response->header.find("Content-Type");
-  ASSERT_NE(content_type, response->header.end());
-  ASSERT_TRUE(content_type->second.find("text/html") != std::string::npos);
-  ASSERT_TRUE(content_type->second.find("charset=utf-8") != std::string::npos);
-
-  // Check security headers
-  assert_security_headers(response);
-
-  // Check HTML content
-  const std::string body = response->content.string();
-  ASSERT_TRUE(body.find("<html>") != std::string::npos);
-  ASSERT_TRUE(body.find("Test Page Content") != std::string::npos);
-  ASSERT_TRUE(body.find("</html>") != std::string::npos);
-}
-
-// Test: confighttp::getPage() works without authentication when require_auth=false
-TEST_F(ConfigHttpTest, GetPageWithoutAuthRequired) {
-  const auto response = client->request("GET", "/page-noauth-test");
-  ASSERT_EQ(response->status_code, "200 OK");
-
-  // Check HTML content is served
-  const std::string body = response->content.string();
-  ASSERT_TRUE(body.find("Test Page Content") != std::string::npos);
-}
-
-// Test: confighttp::getPage() redirects when redirect_if_username=true and username is set
-TEST_F(ConfigHttpTest, GetPageRedirectsWhenUsernameSet) {
-  // Username is set in SetUp(), so redirect_if_username should trigger redirect
-  const auto response = client->request("GET", "/page-redirect-test");
-  ASSERT_EQ(response->status_code, "307 Temporary Redirect");
-
-  // Check redirect location
-  const auto location = response->header.find("Location");
-  ASSERT_NE(location, response->header.end());
-  ASSERT_EQ(location->second, "/");
-}
-
-// Test: confighttp::getPage() doesn't redirect when username is empty
-TEST_F(ConfigHttpTest, GetPageNoRedirectWhenUsernameEmpty) {
-  // Temporarily clear username
-  const std::string saved = config::sunshine.username;
-  config::sunshine.username = "";
-
-  const auto response = client->request("GET", "/page-redirect-test");
-  ASSERT_EQ(response->status_code, "200 OK");
-
-  // Restore username
-  config::sunshine.username = saved;
-}
-
-// Test: browser routes fall back to the SPA entry document
-TEST_F(ConfigHttpTest, BrowserRouteFallsBackToSpaEntry) {
-  SimpleWeb::CaseInsensitiveMultimap headers;
-  headers.emplace("Authorization", create_auth_header("testuser", "testpass"));
-
-  for (const std::string_view path : {"/future-browser-route", "/apiary", "/assets2"}) {
-    const auto response = client->request("GET", std::string {path}, "", headers);
-    EXPECT_EQ(response->status_code, "200 OK") << path;
-    EXPECT_NE(response->content.string().find("Test Page Content"), std::string::npos) << path;
-  }
-}
-
-// Test: server-owned route prefixes retain 404 behavior instead of returning the SPA
-TEST_F(ConfigHttpTest, ServerResourcePrefixesDoNotFallBackToSpaEntry) {
-  for (const std::string_view path : {"/api", "/api/unknown", "/assets", "/assets/missing.js", "/images", "/images/missing.png"}) {
-    const auto response = client->request("GET", std::string {path});
-    EXPECT_EQ(response->status_code, "404 Not Found") << path;
-  }
-}
+// Note: a test asserting default_resource (unmatched-route) responses was attempted here
+// (there is no browser UI to fall back to anymore - the embedded ImGui UI, titan/src/ui/,
+// replaces the browser WebUI this used to serve) but hit a pre-existing issue in this
+// fixture's SimpleWeb-Server/TLS setup: *any* request dispatched through default_resource
+// throws "stream truncated [asio.ssl.stream:1]" in this test harness specifically, even for
+// the unrelated, unchanged POST/DELETE/PATCH/PUT bad_request_handler - default_resource was
+// never actually exercised by a test before (existing tests all hit explicit resource
+// routes). Verified directly against a real running instance instead: unmatched GET routes
+// (including "/") return 404, unmatched POST returns 400, exactly as confighttp.cpp's
+// default_resource handlers implement - see the embedded UI plan's Phase 7 verification.
 
 // Test: confighttp::getLocale() returns locale JSON
 TEST_F(ConfigHttpTest, GetLocaleReturnsJson) {

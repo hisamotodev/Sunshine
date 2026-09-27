@@ -873,134 +873,6 @@ namespace confighttp {
     return true;
   }
 
-  void getPage(const resp_https_t &response, const req_https_t &request, const bool require_auth, const bool redirect_if_username) {
-    // Special handling for welcome page: redirect if the username is already set
-    if (redirect_if_username && !config::sunshine.username.empty()) {
-      send_redirect(response, request, "/");
-      return;
-    }
-
-    if (require_auth && !authenticate(response, request)) {
-      return;
-    }
-
-    print_req(request);
-
-    const std::string content = file_handler::read_file(WEB_DIR "index.html");
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "text/html; charset=utf-8");
-
-    // prevent click jacking
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-
-    response->write(content, headers);
-  }
-
-  void getFallbackPage(const resp_https_t &response, const req_https_t &request) {
-    const std::string_view path = request->path;
-    const auto has_server_prefix = [path](const std::string_view prefix) {
-      return path == prefix || (path.starts_with(prefix) && path.length() > prefix.length() && path[prefix.length()] == '/');
-    };
-
-    if (has_server_prefix("/api") || has_server_prefix("/assets") || has_server_prefix("/images")) {
-      not_found(response, request);
-      return;
-    }
-
-    getPage(response, request);
-  }
-
-  /**
-   * @brief Get the favicon image.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   * @todo combine function with getSunshineLogoImage and possibly getNodeModules
-   * @todo use mime_types map
-   */
-  void getFaviconImage(const resp_https_t &response, const req_https_t &request) {
-    print_req(request);
-
-    std::ifstream in(WEB_DIR "images/sunshine.ico", std::ios::binary);
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "image/x-icon");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
-  }
-
-  /**
-   * @brief Get the Sunshine logo image.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   * @todo combine function with getFaviconImage and possibly getNodeModules
-   * @todo use mime_types map
-   */
-  void getSunshineLogoImage(const resp_https_t &response, const req_https_t &request) {
-    print_req(request);
-
-    std::ifstream in(WEB_DIR "images/logo-sunshine-45.png", std::ios::binary);
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", "image/png");
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
-  }
-
-  /**
-   * @brief Check if a path is a child of another path.
-   * @param base The base path.
-   * @param query The path to check.
-   * @return True if the path is a child of the base path, false otherwise.
-   */
-  bool isChildPath(fs::path const &base, fs::path const &query) {
-    auto relPath = fs::relative(base, query);
-    return *(relPath.begin()) != fs::path("..");
-  }
-
-  /**
-   * @brief Get an asset.
-   * @param response The HTTP response object.
-   * @param request The HTTP request object.
-   */
-  void getAsset(const resp_https_t &response, const req_https_t &request) {
-    print_req(request);
-    fs::path webDirPath(WEB_DIR);
-    fs::path nodeModulesPath(webDirPath / "assets");
-
-    // .relative_path is needed to shed any leading slash that might exist in the request path
-    auto filePath = fs::weakly_canonical(webDirPath / fs::path(request->path).relative_path());
-
-    // Don't do anything if the file does not exist or is outside the assets directory
-    if (!isChildPath(filePath, nodeModulesPath)) {
-      BOOST_LOG(warning) << "Someone requested a path " << filePath << " that is outside the assets folder";
-      bad_request(response, request);
-      return;
-    }
-    if (!fs::exists(filePath)) {
-      not_found(response, request);
-      return;
-    }
-
-    auto relPath = fs::relative(filePath, webDirPath);
-    // get the mime type from the file extension mime_types map
-    // remove the leading period from the extension
-    auto mimeType = mime_types.find(relPath.extension().string().substr(1));
-    // check if the extension is in the map at the x position
-    if (mimeType == mime_types.end()) {
-      bad_request(response, request);
-      return;
-    }
-
-    // if it is, set the content type to the mime type
-    SimpleWeb::CaseInsensitiveMultimap headers;
-    headers.emplace("Content-Type", mimeType->second);
-    headers.emplace("X-Frame-Options", "DENY");
-    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-    std::ifstream in(filePath.string(), std::ios::binary);
-    response->write(SimpleWeb::StatusCode::success_ok, in, headers);
-  }
-
   /**
    * @brief Get a CSRF token for the authenticated user.
    * @param response The HTTP response object.
@@ -2336,27 +2208,19 @@ namespace confighttp {
 
     https_server_t server {config::nvhttp.cert, config::nvhttp.pkey};
 
-    // Helper to create SPA entry handlers without repeating the signature
-    auto page_handler = [](bool require_auth = true, bool redirect_if_username = false) {
-      return [require_auth, redirect_if_username](const resp_https_t &response, const req_https_t &request) {
-        getPage(response, request, require_auth, redirect_if_username);
-      };
-    };
-
-    // Default resource handlers
+    // Default resource handlers - there is no browser UI to fall back to (see the
+    // embedded ImGui UI, titan/src/ui/), so every unmatched route is just an error.
     const https_handler_t bad_request_handler = [](const resp_https_t &response, const req_https_t &request) {
       bad_request(response, request);
     };
-    // error by default
+    const https_handler_t not_found_handler = [](const resp_https_t &response, const req_https_t &request) {
+      not_found(response, request);
+    };
     server.default_resource["DELETE"] = bad_request_handler;
     server.default_resource["PATCH"] = bad_request_handler;
     server.default_resource["POST"] = bad_request_handler;
     server.default_resource["PUT"] = bad_request_handler;
-    server.default_resource["GET"] = getFallbackPage;
-
-    // Public SPA routes with authentication behavior that differs from the default fallback
-    server.resource["^/logout/?$"]["GET"] = page_handler(false);
-    server.resource["^/welcome/?$"]["GET"] = page_handler(false, true);
+    server.default_resource["GET"] = not_found_handler;
 
     // rest api
     server.resource["^/api/browse$"]["GET"] = browseDirectory;
@@ -2385,11 +2249,6 @@ namespace confighttp {
     server.resource["^/api/virtual-input/license$"]["GET"] = getVirtualInputLicense;
     server.resource["^/api/virtual-input/license$"]["POST"] = updateVirtualInputLicense;
     server.resource["^/api/virtual-input/status$"]["GET"] = getVirtualInputStatus;
-
-    // static/dynamic resources
-    server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
-    server.resource["^/images/logo-sunshine-45.png$"]["GET"] = getSunshineLogoImage;
-    server.resource["^/assets\\/.+$"]["GET"] = getAsset;
 
     server.config.reuse_address = true;
     server.config.address = net::get_bind_address(address_family);

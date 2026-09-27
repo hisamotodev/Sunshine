@@ -18,18 +18,12 @@ set(CPACK_STRIP_FILES YES)
 
 # install common assets
 install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/"
-        DESTINATION "${SUNSHINE_ASSETS_DIR}"
-        PATTERN "web" EXCLUDE)
+        DESTINATION "${SUNSHINE_ASSETS_DIR}")
 # copy assets to build directory, for running without install
 # (mirrors the install(DIRECTORY ...) step above so subdirectories, e.g. tray/, keep
 # their structure instead of being flattened into the assets root)
 file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/common/assets/"
-        DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/assets"
-        PATTERN "web" EXCLUDE)
-
-# install built vite assets
-install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/assets/web"
-        DESTINATION "${SUNSHINE_ASSETS_DIR}")
+        DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/assets")
 
 # platform specific packaging
 if(WIN32)

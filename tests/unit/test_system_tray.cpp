@@ -318,13 +318,13 @@ TEST_F(SystemTrayTest, ResolvesDevelopmentTrayIconsFromExecutableDirectory) {
   EXPECT_EQ(system_tray::resource_path_for_testing(nullptr), nullptr);
   EXPECT_EQ(system_tray::resource_path_for_testing(""), nullptr);
 
-  const auto *sunshine_icon = system_tray::resource_path_for_testing("test_assets/web/images/logo-sunshine.svg");
+  const auto *sunshine_icon = system_tray::resource_path_for_testing("test_assets/tray/logo-sunshine.svg");
   ASSERT_NE(sunshine_icon, nullptr);
   EXPECT_TRUE(std::filesystem::path {sunshine_icon}.is_absolute());
   EXPECT_TRUE(std::filesystem::exists(sunshine_icon));
-  EXPECT_EQ(system_tray::resource_path_for_testing("test_assets/web/images/logo-sunshine.svg"), sunshine_icon);
+  EXPECT_EQ(system_tray::resource_path_for_testing("test_assets/tray/logo-sunshine.svg"), sunshine_icon);
 
-  const auto *virtualhid_icon = system_tray::resource_path_for_testing("test_assets/web/images/logo-libvirtualhid.svg");
+  const auto *virtualhid_icon = system_tray::resource_path_for_testing("test_assets/tray/logo-libvirtualhid.svg");
   ASSERT_NE(virtualhid_icon, nullptr);
   EXPECT_TRUE(std::filesystem::path {virtualhid_icon}.is_absolute());
   EXPECT_TRUE(std::filesystem::exists(virtualhid_icon));

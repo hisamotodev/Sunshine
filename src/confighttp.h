@@ -19,12 +19,6 @@
 // local includes
 #include "thread_safe.h"
 
-/**
- * @def WEB_DIR
- * @brief Macro for WEB DIR.
- */
-#define WEB_DIR SUNSHINE_ASSETS_DIR "/web/"
-
 namespace confighttp {
   constexpr auto PORT_HTTPS = 1;  ///< GameStream port offset for port https.
 
@@ -72,23 +66,6 @@ namespace confighttp {
    * @return True when the request passes validation and processing may continue.
    */
   bool check_app_index(const resp_https_t &response, const req_https_t &request, int index);
-  /**
-   * @brief Serve the Web UI single-page application entry document.
-   *
-   * @param response HTTP response object to populate.
-   * @param request HTTP request data from the client.
-   * @param require_auth Whether HTTP authentication is required.
-   * @param redirect_if_username Whether configured users should be redirected to the authenticated home route.
-   */
-  void getPage(const resp_https_t &response, const req_https_t &request, bool require_auth = true, bool redirect_if_username = false);
-  /**
-   * @brief Serve the SPA entry for browser routes and preserve 404 responses for server-owned route prefixes.
-   *
-   * @param response HTTP response object to populate.
-   * @param request HTTP request data from the client.
-   */
-  void getFallbackPage(const resp_https_t &response, const req_https_t &request);
-  void getAsset(const resp_https_t &response, const req_https_t &request);
   void browseDirectory(const resp_https_t &response, const req_https_t &request);
   void getLocale(const resp_https_t &response, const req_https_t &request);
   void getCSRFToken(const resp_https_t &response, const req_https_t &request);
@@ -242,25 +219,3 @@ namespace confighttp {
   nlohmann::json get_windows_drives();
 #endif
 }  // namespace confighttp
-
-// mime types map
-/**
- * @brief File-extension to MIME-type mapping used when serving the Web UI.
- */
-const std::map<std::string, std::string> mime_types = {
-  {"css", "text/css"},
-  {"gif", "image/gif"},
-  {"htm", "text/html"},
-  {"html", "text/html"},
-  {"ico", "image/x-icon"},
-  {"jpeg", "image/jpeg"},
-  {"jpg", "image/jpeg"},
-  {"js", "application/javascript"},
-  {"json", "application/json"},
-  {"png", "image/png"},
-  {"svg", "image/svg+xml"},
-  {"ttf", "font/ttf"},
-  {"txt", "text/plain"},
-  {"woff2", "font/woff2"},
-  {"xml", "text/xml"},
-};
