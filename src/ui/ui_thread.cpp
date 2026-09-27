@@ -18,7 +18,10 @@
 #include "app_state.h"
 #include "screen_clients.h"
 #include "screen_first_run.h"
+#include "screen_logs.h"
 #include "screen_pairing.h"
+#include "screen_troubleshooting.h"
+#include "screen_virtualhid.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -88,6 +91,18 @@ namespace ui {
         }
         if (ImGui::BeginTabItem("Clients")) {
           render_clients_screen();
+          ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Logs")) {
+          render_logs_screen();
+          ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Troubleshooting")) {
+          render_troubleshooting_screen();
+          ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Virtual HID")) {
+          render_virtualhid_screen();
           ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
