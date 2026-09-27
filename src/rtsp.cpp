@@ -12,8 +12,10 @@ extern "C" {
 // standard includes
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <format>
 #include <set>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -27,10 +29,15 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "network.h"
+#include "process.h"
 #include "rtsp.h"
 #include "stream.h"
 #include "sync.h"
 #include "video.h"
+
+#ifdef _WIN32
+  #include "platform/windows/window_capture.h"
+#endif
 
 namespace asio = boost::asio;
 
@@ -1210,6 +1217,64 @@ namespace rtsp_stream {
       respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return;
     }
+
+#ifdef _WIN32
+    // agent.md 7.7/8.3: GameStream negotiates one fixed STREAM_CONFIGURATION
+    // for the life of a session, but a HWND-capture ("capture_window") app's
+    // real window size isn't known to Hunter when it picks the resolution it
+    // requests here -- it's whatever Hunter's own stream settings say, not
+    // the target app's actual window. Left alone, the captured content gets
+    // downscaled/letterboxed by the existing capture-to-canvas scale step
+    // (see wd/hd vs config.width/height in video.cpp) to fit that arbitrary
+    // canvas, which is exactly the "video content stays small inside the
+    // correctly-sized client window" symptom. Override the client's request
+    // with the target window's real size so the two match at connection
+    // time. This can't help a window resized *after* this negotiation --
+    // that requires a full reconnect, since STREAM_CONFIGURATION is fixed
+    // per session -- but it fixes the common case of the window already
+    // being a different size than Hunter's stream settings when the session
+    // starts.
+    for (auto &app : proc::proc.get_apps()) {
+      if (!app.capture_window || app.id != std::to_string(session.appid)) {
+        continue;
+      }
+
+      using namespace std::chrono_literals;
+      auto deadline = std::chrono::steady_clock::now() + 5s;
+      // Wait through both `idle` (begin_resolution() hasn't flipped state yet --
+      // this handler can race ahead of proc_t::execute()'s call to it) and
+      // `pending`, since either could still resolve to `ready` shortly.
+      while (platf::dxgi::window_capture::resolution_state() != platf::dxgi::window_capture::state_e::ready &&
+             platf::dxgi::window_capture::resolution_state() != platf::dxgi::window_capture::state_e::failed &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(100ms);
+      }
+
+      if (auto target = platf::dxgi::window_capture::resolved_target()) {
+        RECT rect {};
+        if (GetWindowRect(target->hwnd, &rect)) {
+          int window_width = (rect.right - rect.left) & ~0x1;
+          int window_height = (rect.bottom - rect.top) & ~0x1;
+          BOOST_LOG(info) << "Capture-window resolution check: requested ["sv << config.monitor.width << 'x'
+                           << config.monitor.height << "], actual window ["sv << window_width << 'x'
+                           << window_height << ']';
+          if (window_width > 0 && window_height > 0 &&
+              (window_width != config.monitor.width || window_height != config.monitor.height)) {
+            BOOST_LOG(info) << "Overriding requested resolution ["sv << config.monitor.width << 'x'
+                             << config.monitor.height << "] with capture-window size ["sv << window_width
+                             << 'x' << window_height << ']';
+            config.monitor.width = window_width;
+            config.monitor.height = window_height;
+          }
+        }
+      } else {
+        BOOST_LOG(warning) << "Capture-window app has no resolved target at ANNOUNCE time (state="sv
+                            << (int) platf::dxgi::window_capture::resolution_state() << ')';
+      }
+
+      break;
+    }
+#endif
 
     // When using stereo audio, the audio quality is (strangely) indicated by whether the Host field
     // in the RTSP message matches a local interface's IP address. Fortunately, Moonlight always sends
