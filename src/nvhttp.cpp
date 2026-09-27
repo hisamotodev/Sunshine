@@ -13,11 +13,13 @@
 #include <format>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 // lib includes
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
+#include <boost/crc.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/xml_parser.hpp>
@@ -42,8 +44,11 @@
 
 #ifdef _WIN32
   // window_capture::resolution_state() for /api/custom/remote-run/status
-  // (agent.md section 8.3)
+  // (agent.md section 8.3), and the window title/icon mirroring added on
+  // top of it (see remote_run_status()/remote_run_icon() below).
   #include "platform/windows/window_capture.h"
+  #include "platform/windows/utf_utils.h"
+  #include <shellapi.h>  // ExtractIconExW, for the icon-extraction fallback in remote_run_status()/remote_run_icon()
 #endif
 
 using namespace std::literals;
@@ -1435,6 +1440,147 @@ namespace nvhttp {
     send(SimpleWeb::StatusCode::client_error_not_found);
   }
 
+#ifdef _WIN32
+  namespace {
+    constexpr int WINDOW_ICON_SIZE = 32;  ///< Fixed icon size Hunter expects (SDL_PIXELFORMAT_RGBA32, no resize on the client).
+    constexpr size_t WINDOW_ICON_BYTES = static_cast<size_t>(WINDOW_ICON_SIZE) * WINDOW_ICON_SIZE * 4;
+
+    std::mutex g_window_icon_cache_mutex;  ///< Guards g_window_icon_cache.
+    std::unordered_map<int, std::vector<uint8_t>> g_window_icon_cache;  ///< app_id -> last-extracted WINDOW_ICON_SIZE^2 RGBA buffer, for remote_run_icon() to serve without re-extracting.
+
+    /**
+     * @brief Resolve a window's icon using the same fallback chain Explorer
+     * and Alt-Tab use: the live `WM_GETICON` value first (so a per-tab
+     * favicon-style icon change is picked up), then the window class icon,
+     * then the process exe's own icon as a last resort for windows that
+     * never set one.
+     * @return The icon handle and whether the caller now owns it (only true
+     * for the `ExtractIconExW` fallback -- the other sources are borrowed
+     * from the window/class and must not be destroyed).
+     */
+    std::pair<HICON, bool> resolve_window_icon(HWND hwnd, DWORD process_id) {
+      HICON icon = nullptr;
+      DWORD_PTR result = 0;
+
+      if (SendMessageTimeoutW(hwnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG, 200, &result) && result) {
+        icon = reinterpret_cast<HICON>(result);
+      }
+      if (!icon && SendMessageTimeoutW(hwnd, WM_GETICON, ICON_SMALL2, 0, SMTO_ABORTIFHUNG, 200, &result) && result) {
+        icon = reinterpret_cast<HICON>(result);
+      }
+      if (!icon) {
+        icon = reinterpret_cast<HICON>(GetClassLongPtrW(hwnd, GCLP_HICON));
+      }
+      if (icon) {
+        return {icon, false};
+      }
+
+      HANDLE process_handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+      if (!process_handle) {
+        return {nullptr, false};
+      }
+
+      wchar_t exe_path[MAX_PATH] {};
+      DWORD exe_path_len = ARRAYSIZE(exe_path);
+      bool got_path = QueryFullProcessImageNameW(process_handle, 0, exe_path, &exe_path_len);
+      CloseHandle(process_handle);
+      if (!got_path) {
+        return {nullptr, false};
+      }
+
+      HICON extracted = nullptr;
+      if (ExtractIconExW(exe_path, 0, &extracted, nullptr, 1) > 0 && extracted) {
+        return {extracted, true};
+      }
+      return {nullptr, false};
+    }
+
+    /**
+     * @brief Render `icon` into a fixed WINDOW_ICON_SIZE x WINDOW_ICON_SIZE
+     * RGBA8888 buffer via `DrawIconEx`, normalizing away whatever size
+     * Windows actually handed back (native icon size varies with DPI
+     * scaling and which fallback in resolve_window_icon() matched).
+     * @return The RGBA buffer, or empty on failure.
+     */
+    std::vector<uint8_t> render_icon_rgba(HICON icon) {
+      std::vector<uint8_t> rgba;
+
+      HDC screen_dc = GetDC(nullptr);
+      if (!screen_dc) {
+        return rgba;
+      }
+      HDC mem_dc = CreateCompatibleDC(screen_dc);
+
+      BITMAPINFO bmi {};
+      bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+      bmi.bmiHeader.biWidth = WINDOW_ICON_SIZE;
+      bmi.bmiHeader.biHeight = -WINDOW_ICON_SIZE;  // negative = top-down DIB
+      bmi.bmiHeader.biPlanes = 1;
+      bmi.bmiHeader.biBitCount = 32;
+      bmi.bmiHeader.biCompression = BI_RGB;
+
+      void *bits = nullptr;
+      HBITMAP dib = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+      if (dib && bits) {
+        HGDIOBJ old_bitmap = SelectObject(mem_dc, dib);
+        RECT fill_rect {0, 0, WINDOW_ICON_SIZE, WINDOW_ICON_SIZE};
+        FillRect(mem_dc, &fill_rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+        DrawIconEx(mem_dc, 0, 0, icon, WINDOW_ICON_SIZE, WINDOW_ICON_SIZE, 0, nullptr, DI_NORMAL);
+        SelectObject(mem_dc, old_bitmap);
+
+        // The DIB comes back BGRA; swizzle to RGBA to match
+        // SDL_PIXELFORMAT_RGBA32 on the client, which uses this buffer
+        // verbatim (see Hunter's session.cpp SDL_CODE_WINDOW_INFO_CHANGED handler).
+        rgba.resize(WINDOW_ICON_BYTES);
+        auto *src = static_cast<const uint8_t *>(bits);
+        for (size_t i = 0; i < WINDOW_ICON_BYTES; i += 4) {
+          rgba[i + 0] = src[i + 2];
+          rgba[i + 1] = src[i + 1];
+          rgba[i + 2] = src[i + 0];
+          rgba[i + 3] = src[i + 3];
+        }
+
+        DeleteObject(dib);
+      }
+
+      DeleteDC(mem_dc);
+      ReleaseDC(nullptr, screen_dc);
+      return rgba;
+    }
+
+    /**
+     * @brief Extract the target window's icon, cache it (keyed by `app_id`)
+     * for remote_run_icon() to serve, and return its CRC32 so the status
+     * poll can tell Hunter whether it needs to re-fetch.
+     * @return The checksum as a string, or empty on failure (the caller
+     * omits the field rather than advertising a checksum for an icon it
+     * can't actually serve).
+     */
+    std::string extract_and_cache_window_icon(int app_id, HWND hwnd, DWORD process_id) {
+      auto [icon, owned] = resolve_window_icon(hwnd, process_id);
+      if (!icon) {
+        return {};
+      }
+
+      auto rgba = render_icon_rgba(icon);
+      if (owned) {
+        DestroyIcon(icon);
+      }
+      if (rgba.empty()) {
+        return {};
+      }
+
+      boost::crc_32_type crc;
+      crc.process_bytes(rgba.data(), rgba.size());
+      auto checksum = std::to_string(crc.checksum());
+
+      std::lock_guard lock(g_window_icon_cache_mutex);
+      g_window_icon_cache[app_id] = std::move(rgba);
+      return checksum;
+    }
+  }  // namespace
+#endif
+
   /**
    * @brief Report whether a remote-run-launched app is actually ready to
    * stream yet (agent.md section 8.3): the client's `/launch` call returns
@@ -1518,6 +1664,19 @@ namespace nvhttp {
             output_tree["width"] = rect.right - rect.left;
             output_tree["height"] = rect.bottom - rect.top;
           }
+
+          // Read live so a title change after the window first appeared
+          // (e.g. a loading screen finishing, a browser's active tab
+          // changing) is picked up by Hunter's poll, not just the initial
+          // resolution.
+          wchar_t title_buf[256] {};
+          GetWindowTextW(target->hwnd, title_buf, ARRAYSIZE(title_buf));
+          output_tree["window_title"] = utf_utils::to_utf8(title_buf);
+
+          auto icon_checksum = extract_and_cache_window_icon(app_id, target->hwnd, target->process_id);
+          if (!icon_checksum.empty()) {
+            output_tree["window_icon_crc32"] = icon_checksum;
+          }
         }
         break;
       case platf::dxgi::window_capture::state_e::failed:
@@ -1536,6 +1695,71 @@ namespace nvhttp {
 
     send(SimpleWeb::StatusCode::success_ok);
   }
+
+#ifdef _WIN32
+  /**
+   * @brief Serve the target window's icon as a raw WINDOW_ICON_SIZE x
+   * WINDOW_ICON_SIZE RGBA8888 buffer (no PNG/image codec involved on either
+   * side -- see the window title/icon mirroring design notes), so Hunter can
+   * wrap the response body directly in an `SDL_Surface`. Hunter only calls
+   * this after `remote_run_status()` reports a changed `window_icon_crc32`,
+   * so this just serves the cache extract_and_cache_window_icon() already
+   * populated -- falling back to a fresh extraction if the cache is somehow
+   * empty (e.g. this endpoint is hit before the first status poll).
+   *
+   * @param response HTTP response object to populate.
+   * @param request HTTP request data from the client.
+   */
+  void remote_run_icon(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    auto args = request->parse_query_string();
+    auto app_id_str = get_arg(args, "app_id", "");
+
+    int app_id;
+    try {
+      app_id = std::stoi(app_id_str);
+    } catch (const std::exception &) {
+      response->write(SimpleWeb::StatusCode::client_error_bad_request, "Missing or invalid 'app_id'");
+      response->close_connection_after_response = true;
+      return;
+    }
+
+    {
+      std::lock_guard lock(g_window_icon_cache_mutex);
+      auto it = g_window_icon_cache.find(app_id);
+      if (it != g_window_icon_cache.end()) {
+        SimpleWeb::CaseInsensitiveMultimap headers;
+        headers.emplace("Content-Type", "application/octet-stream");
+        response->write(SimpleWeb::StatusCode::success_ok, std::string(reinterpret_cast<const char *>(it->second.data()), it->second.size()), headers);
+        response->close_connection_after_response = true;
+        return;
+      }
+    }
+
+    // Cache miss (icon not extracted yet this session) -- re-derive from the
+    // currently-resolved target, same as remote_run_status()'s ready case.
+    if (proc::proc.running() == app_id) {
+      if (auto target = platf::dxgi::window_capture::resolved_target()) {
+        auto icon_checksum = extract_and_cache_window_icon(app_id, target->hwnd, target->process_id);
+        if (!icon_checksum.empty()) {
+          std::lock_guard lock(g_window_icon_cache_mutex);
+          auto it = g_window_icon_cache.find(app_id);
+          if (it != g_window_icon_cache.end()) {
+            SimpleWeb::CaseInsensitiveMultimap headers;
+            headers.emplace("Content-Type", "application/octet-stream");
+            response->write(SimpleWeb::StatusCode::success_ok, std::string(reinterpret_cast<const char *>(it->second.data()), it->second.size()), headers);
+            response->close_connection_after_response = true;
+            return;
+          }
+        }
+      }
+    }
+
+    response->write(SimpleWeb::StatusCode::client_error_not_found, "No icon available for this app_id");
+    response->close_connection_after_response = true;
+  }
+#endif
 
   /**
    * @brief Launch the requested application for a GameStream session.
@@ -1920,6 +2144,9 @@ namespace nvhttp {
     https_server.resource["^/cancel$"]["GET"] = cancel;
     https_server.resource["^/api/custom/remote-run$"]["POST"] = remote_run;
     https_server.resource["^/api/custom/remote-run/status$"]["GET"] = remote_run_status;
+#ifdef _WIN32
+    https_server.resource["^/api/custom/remote-run/icon$"]["GET"] = remote_run_icon;
+#endif
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);
