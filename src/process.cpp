@@ -36,6 +36,9 @@
   // from_utf8() string conversion function
   #include "platform/windows/utf_utils.h"
 
+  // window_capture::begin_resolution()/clear() (agent.md sections 7/8)
+  #include "platform/windows/window_capture.h"
+
   // _SH constants for _wfsopen()
   #include <share.h>
 #endif
@@ -295,6 +298,22 @@ namespace proc {
         BOOST_LOG(warning) << "Couldn't run ["sv << command << "]: System: "sv << ec.message();
         return -1;
       }
+
+#ifdef _WIN32
+      // agent.md sections 7.3/8.1: start resolving this app's target window
+      // now, rather than waiting for the first capture attempt, so a
+      // remote-run client polling the status endpoint (nvhttp.cpp) can see
+      // "starting" turn into "ready" before it ever asks Titan to start
+      // streaming.
+      if (_app.capture_window) {
+        platf::dxgi::window_capture::begin_resolution(
+          (std::uintptr_t) _process_group.native_handle(),
+          utf_utils::from_utf8(_app.window_class),
+          L"",
+          10s
+        );
+      }
+#endif
     }
 
     _app_launch_time = std::chrono::steady_clock::now();
@@ -343,6 +362,9 @@ namespace proc {
     input::terminate_gamepads();
     std::error_code ec;
     placebo = false;
+#ifdef _WIN32
+    platf::dxgi::window_capture::clear();
+#endif
     terminate_process_group(_process, _process_group, _app.exit_timeout);
     _process = boost::process::v1::child();
     _process_group = boost::process::v1::group();
@@ -714,6 +736,7 @@ namespace proc {
         auto cmd = app_node.get_optional<std::string>("cmd"s);
         auto image_path = app_node.get_optional<std::string>("image-path"s);
         auto remote_path = app_node.get_optional<std::string>("remote-path"s);
+        auto window_class = app_node.get_optional<std::string>("window-class"s);
         auto working_dir = app_node.get_optional<std::string>("working-dir"s);
         auto elevated = app_node.get_optional<bool>("elevated"s);
         auto auto_detach = app_node.get_optional<bool>("auto-detach"s);
@@ -786,6 +809,11 @@ namespace proc {
 
         if (remote_path) {
           ctx.remote_path = parse_env_val(this_env, *remote_path);
+        }
+
+        if (window_class) {
+          ctx.window_class = parse_env_val(this_env, *window_class);
+          ctx.capture_window = true;
         }
 
         ctx.elevated = elevated.value_or(false);

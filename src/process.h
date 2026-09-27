@@ -83,6 +83,22 @@ namespace proc {
      * is never itself executed. Empty when the app doesn't support remote-run.
      */
     std::string remote_path;  ///< Remote-run path identifier (see agent.md section 8).
+
+    /**
+     * @brief Win32 window class name used to resolve this app's HWND capture
+     * target (agent.md sections 7.3/8.1). Presence of this field is what
+     * opts an app into window-targeted WGC capture (`capture_window`) --
+     * apps that stream the whole desktop (e.g. `Desktop`) leave it unset.
+     */
+    std::string window_class;  ///< Target window class for HWND capture (see agent.md section 7/8).
+
+    /**
+     * @brief Derived from `window_class` at parse time: whether this app
+     * should be captured via a resolved HWND (window_capture.h) rather than
+     * the display's monitor.
+     */
+    bool capture_window {};  ///< Whether this app uses HWND-targeted capture (see agent.md section 7/8).
+
     bool elevated;  ///< Whether the process should be launched elevated.
     bool auto_detach;  ///< Whether the process should detach automatically.
     bool wait_all;  ///< Whether Sunshine waits for all child processes.

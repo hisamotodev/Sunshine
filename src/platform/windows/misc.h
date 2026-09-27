@@ -7,6 +7,8 @@
 // standard includes
 #include <chrono>
 #include <filesystem>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -52,4 +54,18 @@ namespace platf {
    * @return true if version info was successfully extracted, false otherwise.
    */
   bool getFileVersionInfo(const std::filesystem::path &file_path, std::string &version_str);
+
+  /**
+   * @brief Enumerate the process ids currently in a Job Object.
+   *
+   * Shared by `request_process_group_exit()` and (agent.md section 7.3)
+   * `window_capture`'s HWND resolution, both of which need "which processes
+   * belong to this launched app" from the same Job Object handle
+   * (`boost::process::v1::group::native_handle()`).
+   *
+   * @param native_handle The native handle of the process group (Job Object).
+   * @return Process ids currently in the job (empty if all have exited), or
+   *         `std::nullopt` if the Job Object query itself failed.
+   */
+  std::optional<std::set<DWORD>> process_group_pids(std::uintptr_t native_handle);
 }  // namespace platf

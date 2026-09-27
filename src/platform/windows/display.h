@@ -4,6 +4,9 @@
  */
 #pragma once
 
+// standard includes
+#include <atomic>
+
 // platform includes
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -424,6 +427,28 @@ namespace platf::dxgi {
     virtual bool get_hdr_metadata(SS_HDR_METADATA &metadata) override;
 
     /**
+     * @brief Whether this backend's captured texture already reflects
+     * `display_rotation` (i.e. is in the desktop's final, post-rotation
+     * orientation), as opposed to the panel's native pre-rotation
+     * orientation.
+     *
+     * Desktop Duplication (the default) hands back a pre-rotation texture,
+     * which `d3d_base_encode_device::init_output()`'s rotation vertex
+     * constant buffer (display_vram.cpp) then rotates during the
+     * NV12/P010/etc. conversion pass -- correct for DDX, but WGC's
+     * `GraphicsCaptureItem` captures the already-composited, post-rotation
+     * desktop (see the `alloc_img()`/`snapshot()` comments in this file),
+     * so applying that same rotation again would rotate it a second time.
+     * Defaults to false (Desktop Duplication's behavior, unchanged);
+     * `display_wgc_vram_t` overrides this to true.
+     *
+     * @return True when the capture is already in post-rotation orientation.
+     */
+    virtual bool captures_post_rotation_content() const {
+      return false;
+    }
+
+    /**
      * @brief Convert a DXGI format enum to a diagnostic string.
      *
      * @param format Pixel, audio, or protocol format being converted.
@@ -716,22 +741,52 @@ namespace platf::dxgi {
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame consumed_frame {nullptr};
     SRWLOCK frame_lock = SRWLOCK_INIT;
     CONDITION_VARIABLE frame_present_cv;
+    winrt::event_token item_closed_token {};
+
+    /**
+     * @brief Set by on_item_closed() when the capture item's `Closed` event
+     * fires (agent.md section 7.7 -- HWND capture only: the target window
+     * was destroyed, most commonly a launcher exiting once it has spawned
+     * the real game). Checked by next_frame()/snapshot(), which turn it into
+     * a `capture_e::reinit` so the generic capture-thread teardown/rebuild
+     * path (video.cpp) tears this object down and constructs a fresh one --
+     * whose init() will pick up whatever window_capture has re-resolved to
+     * by then. See window_capture.h.
+     */
+    std::atomic<bool> item_closed {false};
+
+    /**
+     * @brief Pixel format the frame pool was (re)created with, kept so
+     * on_frame_arrived() can pass the same format back to `Recreate()`.
+     */
+    winrt::Windows::Graphics::DirectX::DirectXPixelFormat capture_pixel_format {};
+
+    /**
+     * @brief Content size the frame pool's buffer currently matches.
+     *
+     * agent.md section 7.8: a window's on-screen size can change without
+     * its underlying `Direct3D11CaptureFramePool` buffer resizing on its
+     * own -- WGC keeps delivering frames at the pool's last-created buffer
+     * size (`Direct3D11CaptureFrame::Surface()`'s real texture dimensions),
+     * separate from `Direct3D11CaptureFrame::ContentSize()`, which does
+     * track the window's actual current size. on_frame_arrived() compares
+     * `ContentSize()` against this each frame and calls `frame_pool.Recreate()`
+     * when they differ, exactly the pattern in Microsoft's own
+     * Direct3D11CaptureFramePool samples. Only once the pool has been
+     * recreated does the *buffer* size (and therefore `next_frame()`'s
+     * `desc.Width`/`desc.Height` reinit check in
+     * display_wgc.cpp/display_vram.cpp) reflect the new size -- this is the
+     * missing half of 7.8 that reinit-on-size-mismatch alone doesn't cover
+     * for a resized *window*, unlike a monitor mode change.
+     */
+    winrt::Windows::Graphics::SizeInt32 last_content_size {};
 
     void on_frame_arrived(winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &);
+    void on_item_closed(winrt::Windows::Graphics::Capture::GraphicsCaptureItem const &sender, winrt::Windows::Foundation::IInspectable const &);
 
   public:
     wgc_capture_t();
     ~wgc_capture_t();
-
-    /**
-     * @brief Target window for capture, in place of the display's monitor.
-     *
-     * PoC 3 (agent.md section 7 / 19): when non-null, init() captures this
-     * HWND via IGraphicsCaptureItemInterop::CreateForWindow() instead of
-     * capturing the display's monitor via CreateForMonitor(). Must be set
-     * before calling init(). See docs/research/poc3-titan-hwnd-capture.md.
-     */
-    HWND target_hwnd = nullptr;
 
     /**
      * @brief Initialize D3D cursor rendering resources for GPU capture.
@@ -829,5 +884,31 @@ namespace platf::dxgi {
      * @return Capture status after releasing the current snapshot.
      */
     capture_e release_snapshot() override;
+
+    /**
+     * @brief Allocate a destination image sized for this backend's actual
+     * capture texture.
+     *
+     * Overrides display_vram_t::alloc_img(), which sizes the image from
+     * width_before_rotation/height_before_rotation -- correct for
+     * display_ddup_vram_t (Desktop Duplication hands back a texture in the
+     * panel's pre-rotation orientation), but wrong here: WGC's
+     * GraphicsCaptureItem captures the already-composited (post-rotation)
+     * desktop, so its texture size matches width/height. Allocating the
+     * destination at the pre-rotation size on a rotated display made
+     * snapshot()'s `CopyResource(d3d_img->capture_texture.get(), src.get())`
+     * copy between mismatched-size resources -- an invalid D3D11 call that
+     * left the destination texture as still-cleared (black), which is what
+     * actually produced the black stream, not the reinit loop from the
+     * companion width_before_rotation fix in snapshot() above (that fix
+     * alone stopped the endless reinit but didn't address this).
+     *
+     * @return Image buffer sized to this backend's real capture dimensions.
+     */
+    std::shared_ptr<img_t> alloc_img() override;
+
+    bool captures_post_rotation_content() const override {
+      return true;
+    }
   };
 }  // namespace platf::dxgi

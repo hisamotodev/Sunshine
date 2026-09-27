@@ -4,7 +4,6 @@
  */
 // standard includes
 #include <cmath>
-#include <cstdlib>
 
 // platform includes
 #include <d3dcompiler.h>
@@ -730,7 +729,13 @@ namespace platf::dxgi {
       device_ctx->VSSetConstantBuffers(0, 1, &subsample_offset);
 
       {
-        int32_t rotation_modifier = display->display_rotation == DXGI_MODE_ROTATION_UNSPECIFIED ? 0 : display->display_rotation - 1;
+        // WGC's capture is already in post-rotation orientation (see
+        // display_base_t::captures_post_rotation_content()'s doc comment in
+        // display.h) -- applying this rotation again on top of that would
+        // rotate it a second time.
+        int32_t rotation_modifier = (display->display_rotation == DXGI_MODE_ROTATION_UNSPECIFIED || display->captures_post_rotation_content()) ?
+                                       0 :
+                                       display->display_rotation - 1;
         int32_t rotation_data[16 / sizeof(int32_t)] {-rotation_modifier};  // aligned to 16-byte
         auto rotation = make_buffer(device.get(), rotation_data);
         if (!rotation) {
@@ -1859,7 +1864,23 @@ namespace platf::dxgi {
 
     // It's possible for our display enumeration to race with mode changes and result in
     // mismatched image pool and desktop texture sizes. If this happens, just reinit again.
-    if (desc.Width != width_before_rotation || desc.Height != height_before_rotation) {
+    //
+    // Unlike display_ddup_vram_t::snapshot() above (which compares against
+    // width_before_rotation/height_before_rotation, correct for Desktop
+    // Duplication -- DXGI_OUTDUPL_FRAME_INFO's texture is in the panel's
+    // native, pre-rotation orientation), WGC's GraphicsCaptureItem captures
+    // the already-composited desktop, i.e. already in its final rotated
+    // orientation -- the same orientation width/height (not
+    // width_before_rotation/height_before_rotation) hold. Comparing against
+    // the *_before_rotation fields here made this check permanently fail
+    // (and therefore reinit in an infinite loop) on any 90/270-degree
+    // rotated display, since desc.Width/Height (post-rotation) can never
+    // equal width_before_rotation/height_before_rotation (pre-rotation) for
+    // a rotated output. display_wgc_ram_t::snapshot() (display_wgc.cpp) --
+    // the software-encoder sibling of this VRAM/hardware-encoder path --
+    // already compares against width/height correctly; this brings the VRAM
+    // path in line with it.
+    if (desc.Width != width || desc.Height != height) {
       BOOST_LOG(info) << "Capture size changed ["sv << width << 'x' << height << " -> "sv << desc.Width << 'x' << desc.Height << ']';
       return capture_e::reinit;
     }
@@ -1906,13 +1927,8 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // PoC 3 test hook -- see the identical comment in display_wgc_ram_t::init
-    // (display_wgc.cpp) and docs/research/poc3-titan-hwnd-capture.md.
-    if (const char *hwnd_hex = std::getenv("SUNSHINE_POC_CAPTURE_HWND")) {
-      dup.target_hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::strtoull(hwnd_hex, nullptr, 16)));
-      BOOST_LOG(info) << "PoC 3: SUNSHINE_POC_CAPTURE_HWND set, capturing HWND "sv << hwnd_hex << " instead of the display"sv;
-    }
-
+    // wgc_capture_t::init() queries window_capture::resolved_target() itself
+    // -- see window_capture.h and docs/research/poc3-titan-hwnd-capture.md.
     if (dup.init(this, config)) {
       return -1;
     }
@@ -1926,6 +1942,20 @@ namespace platf::dxgi {
     // Initialize format-independent fields
     img->width = width_before_rotation;
     img->height = height_before_rotation;
+    img->id = next_image_id++;
+    img->blank = true;
+
+    return img;
+  }
+
+  std::shared_ptr<platf::img_t> display_wgc_vram_t::alloc_img() {
+    auto img = std::make_shared<img_d3d_t>();
+
+    // See the doc comment on this override in display.h: width/height (not
+    // width_before_rotation/height_before_rotation) match what WGC actually
+    // captures.
+    img->width = width;
+    img->height = height;
     img->id = next_image_id++;
     img->blank = true;
 

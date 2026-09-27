@@ -2,9 +2,6 @@
  * @file src/platform/windows/display_wgc.cpp
  * @brief Definitions for WinRT Windows.Graphics.Capture API
  */
-// standard includes
-#include <cstdlib>
-
 // platform includes
 #include <dxgi1_2.h>
 
@@ -12,6 +9,7 @@
 #include "display.h"
 #include "misc.h"
 #include "src/logging.h"
+#include "window_capture.h"
 
 // Gross hack to work around MINGW-packages#22160
 #define ____FIReference_1_boolean_INTERFACE_DEFINED__
@@ -88,6 +86,9 @@ namespace platf::dxgi {
   }
 
   wgc_capture_t::~wgc_capture_t() {
+    if (item) {
+      item.Closed(item_closed_token);
+    }
     if (capture_session) {
       capture_session.Close();
     }
@@ -133,13 +134,14 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // PoC 3 (agent.md section 7): capture a specific HWND instead of the
-    // display's monitor when one has been requested. Reuses the same D3D11
-    // device, frame pool, and frame-delivery machinery as monitor capture --
-    // only the GraphicsCaptureItem's target differs. See
-    // docs/research/poc3-titan-hwnd-capture.md.
-    if (target_hwnd) {
-      if (FAILED(status = capture_item_factory->CreateForWindow(target_hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
+    // Capture a specific HWND instead of the display's monitor when the
+    // currently-launched app has resolved one (agent.md section 7/8, see
+    // window_capture.h). Reuses the same D3D11 device, frame pool, and
+    // frame-delivery machinery as monitor capture -- only the
+    // GraphicsCaptureItem's target differs.
+    auto window_target = window_capture::resolved_target();
+    if (window_target) {
+      if (FAILED(status = capture_item_factory->CreateForWindow(window_target->hwnd, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
         BOOST_LOG(error) << "Failed to create capture item for HWND [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
@@ -157,6 +159,12 @@ namespace platf::dxgi {
       display->height = display->height_before_rotation = display->env_height = captured_size.Height;
       display->offset_x = 0;
       display->offset_y = 0;
+
+      // agent.md section 7.7: notice when this window closes (most commonly
+      // a launcher exiting once it has spawned the real game) so we can
+      // recover instead of capturing a dead window forever.
+      item_closed.store(false);
+      item_closed_token = item.Closed({this, &wgc_capture_t::on_item_closed});
     } else {
       DXGI_OUTPUT_DESC output_desc;
       display->output->GetDesc(&output_desc);
@@ -173,7 +181,9 @@ namespace platf::dxgi {
     }
 
     try {
-      frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), 2, item.Size());
+      capture_pixel_format = static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format);
+      last_content_size = item.Size();
+      frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, capture_pixel_format, 2, last_content_size);
       capture_session = frame_pool.CreateCaptureSession(item);
       frame_pool.FrameArrived({this, &wgc_capture_t::on_frame_arrived});
     } catch (winrt::hresult_error &e) {
@@ -221,6 +231,24 @@ namespace platf::dxgi {
       return;
     }
     if (frame != nullptr) {
+      // agent.md section 7.8: a resized window's ContentSize changes
+      // independently of the frame pool's buffer size -- see the doc
+      // comment on last_content_size in display.h. Recreate() the pool to
+      // match; only then will next_frame()/snapshot()'s existing
+      // desc.Width/desc.Height check (comparing against the buffer's real
+      // texture size) notice the change and trigger a full reinit that
+      // re-reads the window's new size via a fresh init().
+      auto content_size = frame.ContentSize();
+      if (content_size.Width != last_content_size.Width || content_size.Height != last_content_size.Height) {
+        BOOST_LOG(info) << "WGC content size changed ["sv << last_content_size.Width << 'x' << last_content_size.Height << " -> "sv << content_size.Width << 'x' << content_size.Height << ']';
+        try {
+          sender.Recreate(uwp_device, capture_pixel_format, 2, content_size);
+        } catch (winrt::hresult_error &e) {
+          BOOST_LOG(warning) << "Failed to recreate frame pool for new content size: "sv << e.code();
+        }
+        last_content_size = content_size;
+      }
+
       AcquireSRWLockExclusive(&frame_lock);
       if (produced_frame) {
         produced_frame.Close();
@@ -233,12 +261,37 @@ namespace platf::dxgi {
   }
 
   /**
+   * @brief `GraphicsCaptureItem::Closed` handler (agent.md section 7.7).
+   * Fires when the target window (or, for monitor capture, the underlying
+   * output) goes away. Runs on a WinRT-owned thread, not the Sunshine
+   * capture thread -- only touches the atomic flag and the (independently
+   * synchronized) window_capture module.
+   */
+  void wgc_capture_t::on_item_closed(winrt::Windows::Graphics::Capture::GraphicsCaptureItem const &, winrt::IInspectable const &) {
+    BOOST_LOG(info) << "WGC capture item closed"sv;
+    item_closed.store(true);
+    window_capture::on_window_closed();
+    WakeConditionVariable(&frame_present_cv);
+  }
+
+  /**
    * @brief Get the next frame from the producer thread.
    * If not available, the capture thread blocks until one is, or the wait times out.
    */
   capture_e wgc_capture_t::next_frame(std::chrono::milliseconds timeout, ID3D11Texture2D **out, uint64_t &out_time) {
     // this CONSUMER runs in the capture thread
     release_frame();
+
+    if (item_closed.load()) {
+      // Force the generic capture-thread teardown/rebuild path (video.cpp)
+      // to run: it destroys this display_t (and this wgc_capture_t with it)
+      // and constructs a fresh one, whose init() re-reads whatever
+      // window_capture has (re-)resolved to by then. `capture_e::error`
+      // would instead just kill the capture thread outright -- only
+      // `reinit` drives that recovery (see agent.md section 7.7 and the
+      // capture_e switch in video.cpp's captureThread()).
+      return capture_e::reinit;
+    }
 
     AcquireSRWLockExclusive(&frame_lock);
     if (produced_frame == nullptr && SleepConditionVariableSRW(&frame_present_cv, &frame_lock, timeout.count(), 0) == 0) {
@@ -291,16 +344,9 @@ namespace platf::dxgi {
       return -1;
     }
 
-    // PoC 3 test hook (agent.md section 7 / 19), NOT the real remote-run /
-    // apps.json HWND resolution planned for section 8 -- that needs proper
-    // process/window resolution logic (section 7.3). This is just enough to
-    // validate the capture path end-to-end against a real Moonlight stream.
-    // See docs/research/poc3-titan-hwnd-capture.md.
-    if (const char *hwnd_hex = std::getenv("SUNSHINE_POC_CAPTURE_HWND")) {
-      dup.target_hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::strtoull(hwnd_hex, nullptr, 16)));
-      BOOST_LOG(info) << "PoC 3: SUNSHINE_POC_CAPTURE_HWND set, capturing HWND "sv << hwnd_hex << " instead of the display"sv;
-    }
-
+    // wgc_capture_t::init() (below) queries window_capture::resolved_target()
+    // itself -- see window_capture.h and the PoC 3 -> real design writeup in
+    // docs/research/poc3-titan-hwnd-capture.md.
     if (dup.init(this, config)) {
       return -1;
     }

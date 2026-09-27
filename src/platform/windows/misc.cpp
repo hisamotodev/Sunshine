@@ -1358,7 +1358,7 @@ namespace platf {
     return TRUE;
   }
 
-  bool request_process_group_exit(std::uintptr_t native_handle) {
+  std::optional<std::set<DWORD>> process_group_pids(std::uintptr_t native_handle) {
     auto job_handle = (HANDLE) native_handle;
 
     // Get list of all processes in our job object
@@ -1373,24 +1373,35 @@ namespace platf {
       free(process_id_list);
       process_id_list = (PJOBOBJECT_BASIC_PROCESS_ID_LIST) calloc(1, required_length);
       if (!process_id_list) {
-        return false;
+        return std::nullopt;
       }
     }
 
     if (!success) {
       auto err = GetLastError();
       BOOST_LOG(warning) << "Failed to enumerate processes in group: "sv << err;
+      return std::nullopt;
+    }
+
+    std::set<DWORD> pids;
+    for (DWORD i = 0; i < process_id_list->NumberOfProcessIdsInList; i++) {
+      pids.emplace(process_id_list->ProcessIdList[i]);
+    }
+    return pids;
+  }
+
+  bool request_process_group_exit(std::uintptr_t native_handle) {
+    auto pids = process_group_pids(native_handle);
+    if (!pids) {
       return false;
-    } else if (process_id_list->NumberOfProcessIdsInList == 0) {
+    } else if (pids->empty()) {
       // If all processes are already dead, treat it as a success
       return true;
     }
 
     enum_wnd_context_t enum_ctx = {};
     enum_ctx.requested_exit = false;
-    for (DWORD i = 0; i < process_id_list->NumberOfProcessIdsInList; i++) {
-      enum_ctx.process_ids.emplace(process_id_list->ProcessIdList[i]);
-    }
+    enum_ctx.process_ids = std::move(*pids);
 
     // Enumerate all windows belonging to processes in the list
     EnumWindows(prgrp_enum_windows, (LPARAM) &enum_ctx);

@@ -1,0 +1,194 @@
+/**
+ * @file src/platform/windows/window_capture.cpp
+ * @brief See window_capture.h.
+ */
+#include "window_capture.h"
+
+// standard includes
+#include <cwchar>
+#include <mutex>
+#include <set>
+#include <string_view>
+#include <thread>
+
+// local includes
+#include "misc.h"
+#include "src/logging.h"
+
+using namespace std::literals;
+
+namespace platf::dxgi::window_capture {
+  namespace {
+    struct criteria_t {
+      std::uintptr_t job_handle = 0;
+      std::wstring window_class;
+      std::wstring window_title;
+      std::chrono::milliseconds timeout {10000};
+    };
+
+    struct enum_ctx_t {
+      const std::set<DWORD> *pids;
+      const std::wstring *window_class;
+      const std::wstring *window_title;
+      HWND best = nullptr;
+    };
+
+    // Guards every field below. Contention is negligible: at most one search
+    // thread plus occasional reads from wgc_capture_t::init() (once per
+    // display (re)init, not per frame).
+    std::mutex g_mutex;
+    state_e g_state = state_e::idle;
+    std::optional<window_capture_target_t> g_target;
+    std::optional<criteria_t> g_criteria;
+    uint64_t g_generation = 0;
+    std::thread g_worker;
+
+    /**
+     * @brief `EnumWindows` callback: accepts the first visible top-level
+     * window owned by a PID in `ctx->pids` that also matches the configured
+     * class/title filters (agent.md 7.3 steps 3-4 -- PID membership first,
+     * class/title as additional narrowing, never "biggest visible window"
+     * alone).
+     */
+    BOOL CALLBACK enum_windows_proc(HWND hwnd, LPARAM lparam) {
+      auto *ctx = reinterpret_cast<enum_ctx_t *>(lparam);
+
+      if (!IsWindowVisible(hwnd)) {
+        return TRUE;
+      }
+
+      DWORD pid = 0;
+      GetWindowThreadProcessId(hwnd, &pid);
+      if (ctx->pids->find(pid) == ctx->pids->end()) {
+        return TRUE;
+      }
+
+      if (!ctx->window_class->empty()) {
+        wchar_t class_name[256] {};
+        GetClassNameW(hwnd, class_name, ARRAYSIZE(class_name));
+        if (_wcsicmp(class_name, ctx->window_class->c_str()) != 0) {
+          return TRUE;
+        }
+      }
+
+      if (!ctx->window_title->empty()) {
+        wchar_t title[256] {};
+        GetWindowTextW(hwnd, title, ARRAYSIZE(title));
+        if (wcsstr(title, ctx->window_title->c_str()) == nullptr) {
+          return TRUE;
+        }
+      }
+
+      ctx->best = hwnd;
+      return FALSE;  // stop enumeration, we found an acceptable match
+    }
+
+    std::optional<HWND> find_window_for_pids(const std::set<DWORD> &pids, const std::wstring &window_class, const std::wstring &window_title) {
+      enum_ctx_t ctx {&pids, &window_class, &window_title};
+      EnumWindows(enum_windows_proc, reinterpret_cast<LPARAM>(&ctx));
+      if (ctx.best) {
+        return ctx.best;
+      }
+      return std::nullopt;
+    }
+
+    /**
+     * @brief Detaches the current `g_worker` (if any). Must be called with
+     * `g_mutex` held. The detached thread notices it's been superseded via
+     * the generation check in `run_search()` and exits on its own; detaching
+     * (rather than joining) avoids blocking the caller for up to 200ms.
+     */
+    void detach_previous_worker_locked() {
+      if (g_worker.joinable()) {
+        g_worker.detach();
+      }
+    }
+
+    void run_search(uint64_t generation, criteria_t criteria) {
+      auto deadline = std::chrono::steady_clock::now() + criteria.timeout;
+      for (;;) {
+        {
+          std::lock_guard lock(g_mutex);
+          if (g_generation != generation) {
+            return;  // superseded by a newer begin_resolution()/on_window_closed()/clear()
+          }
+        }
+
+        auto pids = platf::process_group_pids(criteria.job_handle);
+        if (pids) {
+          if (auto hwnd = find_window_for_pids(*pids, criteria.window_class, criteria.window_title)) {
+            std::lock_guard lock(g_mutex);
+            if (g_generation != generation) {
+              return;
+            }
+            window_capture_target_t target;
+            target.hwnd = *hwnd;
+            GetWindowThreadProcessId(*hwnd, &target.process_id);
+            target.window_class = criteria.window_class;
+            target.window_title = criteria.window_title;
+            g_target = target;
+            g_state = state_e::ready;
+            BOOST_LOG(info) << "window_capture: resolved capture target HWND for PID "sv << target.process_id;
+            return;
+          }
+        }
+
+        if (std::chrono::steady_clock::now() >= deadline) {
+          std::lock_guard lock(g_mutex);
+          if (g_generation == generation) {
+            g_state = state_e::failed;
+            BOOST_LOG(warning) << "window_capture: timed out waiting for a matching window (job_handle="sv << criteria.job_handle << ')';
+          }
+          return;
+        }
+
+        std::this_thread::sleep_for(200ms);
+      }
+    }
+  }  // namespace
+
+  void begin_resolution(std::uintptr_t job_handle, std::wstring window_class, std::wstring window_title, std::chrono::milliseconds timeout) {
+    criteria_t criteria {job_handle, std::move(window_class), std::move(window_title), timeout};
+
+    std::lock_guard lock(g_mutex);
+    auto generation = ++g_generation;
+    g_criteria = criteria;
+    g_target.reset();
+    g_state = state_e::pending;
+    detach_previous_worker_locked();
+    g_worker = std::thread(run_search, generation, std::move(criteria));
+  }
+
+  state_e resolution_state() {
+    std::lock_guard lock(g_mutex);
+    return g_state;
+  }
+
+  std::optional<window_capture_target_t> resolved_target() {
+    std::lock_guard lock(g_mutex);
+    return g_target;
+  }
+
+  void on_window_closed() {
+    std::lock_guard lock(g_mutex);
+    if (!g_criteria) {
+      return;  // nothing to re-arm against (already cleared, or a monitor's Closed event)
+    }
+    BOOST_LOG(info) << "window_capture: capture target window closed, re-resolving"sv;
+    g_target.reset();
+    g_state = state_e::pending;
+    auto generation = ++g_generation;
+    auto criteria = *g_criteria;
+    detach_previous_worker_locked();
+    g_worker = std::thread(run_search, generation, std::move(criteria));
+  }
+
+  void clear() {
+    std::lock_guard lock(g_mutex);
+    ++g_generation;
+    g_criteria.reset();
+    g_target.reset();
+    g_state = state_e::idle;
+    detach_previous_worker_locked();
+  }
+}  // namespace platf::dxgi::window_capture
