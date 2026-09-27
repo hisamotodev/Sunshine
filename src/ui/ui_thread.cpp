@@ -16,8 +16,10 @@
 
 // local includes
 #include "app_state.h"
+#include "local_client.h"
 #include "screen_clients.h"
 #include "screen_first_run.h"
+#include "screen_instances.h"
 #include "screen_logs.h"
 #include "screen_pairing.h"
 #include "screen_troubleshooting.h"
@@ -111,6 +113,10 @@ namespace ui {
           render_virtualhid_screen();
           ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Other Instances")) {
+          render_instances_screen();
+          ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
       }
 
@@ -175,6 +181,7 @@ namespace ui {
       ImGui_ImplSDLRenderer3_Init(renderer);
 
       AppState state;
+      state.client = std::make_unique<LocalClient>();
 
       BOOST_LOG(info) << "Embedded UI thread started"sv;
 

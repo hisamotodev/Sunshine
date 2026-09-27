@@ -101,6 +101,17 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/ui/screen_troubleshooting.cpp"
         "${CMAKE_SOURCE_DIR}/src/ui/screen_virtualhid.h"
         "${CMAKE_SOURCE_DIR}/src/ui/screen_virtualhid.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ui/client.h"
+        "${CMAKE_SOURCE_DIR}/src/ui/remote_client.h"
+        "${CMAKE_SOURCE_DIR}/src/ui/remote_client.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ui/win_util.h"
+        "${CMAKE_SOURCE_DIR}/src/ui/win_util.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ui/credential_cache.h"
+        "${CMAKE_SOURCE_DIR}/src/ui/credential_cache.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ui/discovery.h"
+        "${CMAKE_SOURCE_DIR}/src/ui/discovery.cpp"
+        "${CMAKE_SOURCE_DIR}/src/ui/screen_instances.h"
+        "${CMAKE_SOURCE_DIR}/src/ui/screen_instances.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Client.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Common.h"
@@ -115,6 +126,7 @@ set(OPENSSL_LIBRARIES
 list(PREPEND PLATFORM_LIBRARIES
         ${CURL_STATIC_LIBRARIES}
         avrt
+        crypt32
         d3d11
         D3DCompiler
         dwmapi
@@ -131,6 +143,7 @@ list(PREPEND PLATFORM_LIBRARIES
         shlwapi
         synchronization.lib
         userenv
+        winhttp
         ws2_32
         wsock32
 )

@@ -34,10 +34,12 @@
 #include "confighttp.h"
 #include "display_device.h"
 #include "entry_handler.h"
+#include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
 #include "logging.h"
 #include "main.h"
+#include "network.h"
 #include "nvhttp.h"
 #include "process.h"
 #include "system_tray.h"
@@ -314,12 +316,21 @@ int main(int argc, char *argv[]) {
       auto parent_name = config_path.parent_path().filename().string();
       instance_name = !parent_name.empty() ? parent_name : config_path.stem().string();
     }
+    config::sunshine.instance_name = instance_name;  // resolved value, for ui::discovery to exclude self
 
     auto instance_local_dir = platf::appdata_local(instance_name);
     if (instance_local_dir.empty()) {
       BOOST_LOG(warning) << "Could not resolve %LOCALAPPDATA% for instance '"sv << instance_name << "'; cross-instance discovery data will be unavailable"sv;
     } else {
       BOOST_LOG(info) << "Instance name: "sv << instance_name << " (local data: "sv << instance_local_dir.string() << ')';
+
+      // Manifest read by other instances' embedded UI (ui::discovery) to find this one.
+      nlohmann::json manifest;
+      manifest["display_name"] = config::nvhttp.sunshine_name.empty() ? instance_name : config::nvhttp.sunshine_name;
+      manifest["confighttp_port"] = net::map_port(confighttp::PORT_HTTPS);
+      manifest["pid"] = GetCurrentProcessId();
+      manifest["started_at"] = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+      file_handler::write_file((instance_local_dir / "instance.json").string().c_str(), manifest.dump(2));
     }
   }
 

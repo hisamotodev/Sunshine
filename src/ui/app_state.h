@@ -2,8 +2,9 @@
  * @file src/ui/app_state.h
  * @brief Shared embedded-UI state for the Settings/Apps tabs.
  *
- * Ported from config-gui/app_state.h, simplified to a single (self) instance -
- * cross-instance management (config-gui's InstanceStore/connect flow) is a later phase.
+ * Ported from config-gui/app_state.h. `client` is the Client interface (client.h) so
+ * the same AppState/render_settings_tab/render_apps_tab work for both the local (self)
+ * instance (LocalClient) and another discovered instance (RemoteClient, screen_instances.cpp).
  */
 #pragma once
 
@@ -19,7 +20,7 @@
 #include <nlohmann/json.hpp>
 
 // local includes
-#include "local_client.h"
+#include "client.h"
 
 namespace ui {
 
@@ -27,7 +28,7 @@ namespace ui {
   // ui_apps.cpp). Reloaded wholesale after every save, since Titan itself
   // resorts/renumbers apps on every write.
   struct AppState {
-    std::unique_ptr<LocalClient> client = std::make_unique<LocalClient>();
+    std::unique_ptr<Client> client;
 
     std::string status_message;
     bool status_is_error = false;
