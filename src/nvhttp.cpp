@@ -7,6 +7,7 @@
 
 // standard includes
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <format>
@@ -15,7 +16,6 @@
 #include <utility>
 
 // lib includes
-#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -39,6 +39,12 @@
 #include "utility.h"
 #include "uuid.h"
 #include "video.h"
+
+#ifdef _WIN32
+  // window_capture::resolution_state() for /api/custom/remote-run/status
+  // (agent.md section 8.3)
+  #include "platform/windows/window_capture.h"
+#endif
 
 using namespace std::literals;
 
@@ -1330,6 +1336,39 @@ namespace nvhttp {
   }
 
   /**
+   * @brief Canonicalize a Windows path for safe comparison (agent.md section
+   * 14.2). Only ever used for the read-only `remote_path` *comparison* below
+   * -- never for constructing anything that gets executed, so this cannot
+   * turn an unregistered path into a registered one; it only makes an
+   * otherwise-identical path (different slash direction, case, `..`
+   * segments, or a relative path) still match its canonical registered form.
+   *
+   * @param path Path string, as configured in apps.json or supplied by a client.
+   * @return Canonical, uppercased form suitable for `==` comparison.
+   */
+  static std::string normalize_path_for_compare(const std::string &path) {
+    namespace fs = std::filesystem;
+
+    std::string trimmed = path;
+    if (trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
+      trimmed = trimmed.substr(1, trimmed.size() - 2);
+    }
+
+    fs::path p(trimmed);
+    std::error_code ec;
+    if (auto canonical = fs::weakly_canonical(p, ec); !ec) {
+      p = canonical;
+    }
+    p.make_preferred();  // normalize '/' -> '\' regardless of weakly_canonical's outcome
+
+    std::string result = p.string();
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
+      return (char) std::toupper(c);
+    });
+    return result;
+  }
+
+  /**
    * @brief Resolve a Hunter `--remote-run=<path>` request to a registered App ID.
    *
    * Per agent.md section 8.2: this endpoint only resolves `remote_path` to an
@@ -1380,8 +1419,9 @@ namespace nvhttp {
       return;
     }
 
+    auto normalized_request_path = normalize_path_for_compare(remote_path);
     for (auto &app : proc::proc.get_apps()) {
-      if (!app.remote_path.empty() && boost::iequals(app.remote_path, remote_path)) {
+      if (!app.remote_path.empty() && normalize_path_for_compare(app.remote_path) == normalized_request_path) {
         output_tree["app_id"] = app.id;
         output_tree["name"] = app.name;
         output_tree["state"] = "resolved";
@@ -1393,6 +1433,108 @@ namespace nvhttp {
     BOOST_LOG(warning) << "Remote-run: no registered app matches remote_path ["sv << remote_path << ']';
     output_tree["error"] = "REMOTE_RUN_NOT_REGISTERED";
     send(SimpleWeb::StatusCode::client_error_not_found);
+  }
+
+  /**
+   * @brief Report whether a remote-run-launched app is actually ready to
+   * stream yet (agent.md section 8.3): the client's `/launch` call returns
+   * as soon as the process is spawned, but for a `capture-window` app the
+   * target HWND may not exist for another moment (launcher -> game handoff).
+   * Hunter polls this after `/launch` and before starting the RTSP session.
+   *
+   * @param response HTTP response object to populate.
+   * @param request HTTP request data from the client.
+   */
+  void remote_run_status(resp_https_t response, req_https_t request) {
+    print_req<SunshineHTTPS>(request);
+
+    nlohmann::json output_tree;
+    auto send = [&](SimpleWeb::StatusCode status_code) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/json");
+      response->write(status_code, output_tree.dump(), headers);
+      response->close_connection_after_response = true;
+    };
+
+    auto args = request->parse_query_string();
+    auto app_id_str = get_arg(args, "app_id", "");
+    if (app_id_str.empty()) {
+      output_tree["error"] = "REMOTE_RUN_INVALID_REQUEST";
+      output_tree["message"] = "Missing 'app_id'";
+      send(SimpleWeb::StatusCode::client_error_bad_request);
+      return;
+    }
+
+    output_tree["app_id"] = app_id_str;
+
+    int app_id;
+    try {
+      app_id = std::stoi(app_id_str);
+    } catch (const std::exception &) {
+      output_tree["error"] = "REMOTE_RUN_INVALID_REQUEST";
+      output_tree["message"] = "Invalid 'app_id'";
+      send(SimpleWeb::StatusCode::client_error_bad_request);
+      return;
+    }
+
+    if (proc::proc.running() != app_id) {
+      // Either not launched yet, or a different app is running -- from the
+      // polling client's perspective these both just mean "not ready yet."
+      output_tree["state"] = "starting";
+      send(SimpleWeb::StatusCode::success_ok);
+      return;
+    }
+
+    auto capture_window = false;
+    for (auto &app : proc::proc.get_apps()) {
+      if (app.id == std::to_string(app_id)) {
+        capture_window = app.capture_window;
+        break;
+      }
+    }
+
+    if (!capture_window) {
+      // Nothing HWND-specific to wait for -- the running process itself is the readiness signal.
+      output_tree["state"] = "ready";
+      send(SimpleWeb::StatusCode::success_ok);
+      return;
+    }
+
+#ifdef _WIN32
+    switch (platf::dxgi::window_capture::resolution_state()) {
+      case platf::dxgi::window_capture::state_e::ready:
+        output_tree["state"] = "ready";
+        // agent.md section 11.5 / issue found in live testing: report the
+        // resolved window's real size so Hunter can size its stream/client
+        // window to match, instead of stretching the app's actual content
+        // into whatever resolution the client happened to request before
+        // this app's window existed. GetWindowRect (full window bounds,
+        // decorations included) is what WGC's window-target capture
+        // actually captures -- an approximation of item.Size(), which isn't
+        // queryable here since no capture session is running yet.
+        if (auto target = platf::dxgi::window_capture::resolved_target()) {
+          RECT rect {};
+          if (GetWindowRect(target->hwnd, &rect)) {
+            output_tree["width"] = rect.right - rect.left;
+            output_tree["height"] = rect.bottom - rect.top;
+          }
+        }
+        break;
+      case platf::dxgi::window_capture::state_e::failed:
+        output_tree["state"] = "failed";
+        output_tree["message"] = "Timed out waiting for the app's window to appear";
+        break;
+      case platf::dxgi::window_capture::state_e::pending:
+      case platf::dxgi::window_capture::state_e::idle:
+      default:
+        output_tree["state"] = "starting";
+        break;
+    }
+#else
+    output_tree["state"] = "ready";
+#endif
+
+    send(SimpleWeb::StatusCode::success_ok);
   }
 
   /**
@@ -1777,6 +1919,7 @@ namespace nvhttp {
     };
     https_server.resource["^/cancel$"]["GET"] = cancel;
     https_server.resource["^/api/custom/remote-run$"]["POST"] = remote_run;
+    https_server.resource["^/api/custom/remote-run/status$"]["GET"] = remote_run_status;
 
     https_server.config.reuse_address = true;
     https_server.config.address = net::get_bind_address(address_family);
