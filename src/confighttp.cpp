@@ -1170,8 +1170,11 @@ namespace confighttp {
         return a["name"].get<std::string>() < b["name"].get<std::string>();
       });
 
-      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
-      proc::refresh(config::stream.file_apps);
+      {
+        const std::scoped_lock lock(config::config_write_mutex);
+        file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+        proc::refresh(config::stream.file_apps);
+      }
 
       output_tree["status"] = true;
       send_response(response, output_tree);
@@ -1246,8 +1249,11 @@ namespace confighttp {
       }
       file_tree["apps"] = new_apps;
 
-      file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
-      proc::refresh(config::stream.file_apps);
+      {
+        const std::scoped_lock lock(config::config_write_mutex);
+        file_handler::write_file(config::stream.file_apps.c_str(), file_tree.dump(4));
+        proc::refresh(config::stream.file_apps);
+      }
 
       output_tree["status"] = true;
       output_tree["result"] = std::format("application {} deleted", index);
@@ -1504,7 +1510,10 @@ namespace confighttp {
         // we should migrate the config file to straight JSON and get rid of all this nonsense
         config_stream << k << " = " << (v.is_string() ? v.get<std::string>() : v.dump()) << std::endl;
       }
-      file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+      {
+        const std::scoped_lock lock(config::config_write_mutex);
+        file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
+      }
       output_tree["status"] = true;
       send_response(response, output_tree);
     } catch (std::exception &e) {

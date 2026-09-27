@@ -7,6 +7,7 @@
 // standard includes
 #include <bitset>
 #include <chrono>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -403,6 +404,13 @@ namespace config {
   extern nvhttp_t nvhttp;
   extern input_t input;
   extern sunshine_t sunshine;
+
+  /**
+   * @brief Guards writes to sunshine.conf/apps.json made outside confighttp.cpp's own
+   *        HTTP handler threads (currently: the embedded UI's local_client). confighttp.cpp's
+   *        handlers and local_client both acquire this before touching config::/proc:: state.
+   */
+  extern std::mutex config_write_mutex;
 
 #ifdef SUNSHINE_TESTS
   /**

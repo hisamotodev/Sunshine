@@ -893,6 +893,8 @@ namespace config {
     {},  // csrf_allowed_origins
   };
 
+  std::mutex config_write_mutex;
+
   /**
    * @brief Return whether a character terminates a configuration line.
    *

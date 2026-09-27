@@ -15,8 +15,11 @@
 #include <imgui_impl_sdlrenderer3.h>
 
 // local includes
+#include "app_state.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "ui_apps.h"
+#include "ui_settings.h"
 #include "ui_thread.h"
 
 using namespace std::literals;
@@ -39,11 +42,12 @@ namespace ui {
     }
 
     /**
-     * @brief Render one frame of the embedded UI's placeholder content.
+     * @brief Render one frame of the embedded UI's Settings/Apps tabs.
      *
-     * Real screens (Settings, Apps, first-run, pairing, ...) replace this in later phases.
+     * First-run, pairing, clients, logs, and the rest of the WebUI's functionality
+     * land in later phases.
      */
-    void render_frame() {
+    void render_frame(AppState &state) {
       const auto *viewport = ImGui::GetMainViewport();
       ImGui::SetNextWindowPos(viewport->WorkPos);
       ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -53,8 +57,28 @@ namespace ui {
         nullptr,
         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar
       );
-      ImGui::Text("Sunshine embedded UI (placeholder)");
-      ImGui::TextDisabled("Settings, Apps, and the rest of the WebUI's functionality land in later phases.");
+
+      if (!state.status_message.empty()) {
+        if (state.status_is_error) {
+          ImGui::TextColored(ImVec4(1.0F, 0.4F, 0.4F, 1.0F), "%s", state.status_message.c_str());
+        } else {
+          ImGui::TextColored(ImVec4(0.5F, 0.9F, 0.5F, 1.0F), "%s", state.status_message.c_str());
+        }
+        ImGui::Separator();
+      }
+
+      if (ImGui::BeginTabBar("tabs")) {
+        if (ImGui::BeginTabItem("Settings")) {
+          render_settings_tab(state);
+          ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Apps")) {
+          render_apps_tab(state);
+          ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+      }
+
       ImGui::End();
     }
 
@@ -115,6 +139,8 @@ namespace ui {
       ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
       ImGui_ImplSDLRenderer3_Init(renderer);
 
+      AppState state;
+
       BOOST_LOG(info) << "Embedded UI thread started"sv;
 
       while (!stop_token.stop_requested()) {
@@ -153,7 +179,7 @@ namespace ui {
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
 
-        render_frame();
+        render_frame(state);
 
         ImGui::Render();
         SDL_SetRenderScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
