@@ -110,6 +110,28 @@ namespace platf::dxgi::window_capture {
     }
 
     /**
+     * @brief Diagnostic test: Windows 11 rounds a window's corners by
+     * default (DWM-composited, purely cosmetic -- doesn't change the
+     * window's rect/style, unlike the old WS_CAPTION strip this module used
+     * to do). Suspected of leaving a faint few-pixel artifact in a
+     * window-target WGC capture that a live-tested black-bar gap survived
+     * every resolution/crop fix tried so far. Disabling it doesn't affect
+     * local window operability (cosmetic only), so unlike WS_CAPTION this
+     * needs no crop-based workaround if it turns out to matter.
+     */
+    void disable_rounded_corners(HWND hwnd) {
+      DWM_WINDOW_CORNER_PREFERENCE preference = DWMWCP_DONOTROUND;
+      DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference));
+
+      // Disabling rounded corners alone left a 1px edge on three of four
+      // sides in live testing -- Windows 11 also draws a thin accent-color
+      // border around a window (a separate DWM feature from corner
+      // rounding), which DWMWA_COLOR_NONE turns off.
+      COLORREF border_color = DWMWA_COLOR_NONE;
+      DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border_color, sizeof(border_color));
+    }
+
+    /**
      * @brief Detaches the current `g_worker` (if any). Must be called with
      * `g_mutex` held. The detached thread notices it's been superseded via
      * the generation check in `run_search()` and exits on its own; detaching
@@ -134,6 +156,7 @@ namespace platf::dxgi::window_capture {
         auto pids = platf::process_group_pids(criteria.job_handle);
         if (pids) {
           if (auto hwnd = find_window_for_pids(*pids, criteria.window_class, criteria.window_title)) {
+            disable_rounded_corners(*hwnd);
             std::lock_guard lock(g_mutex);
             if (g_generation != generation) {
               return;
