@@ -187,6 +187,23 @@ namespace platf::dxgi {
       display->offset_x = 0;
       display->offset_y = 0;
 
+      // Win32 routes mouse input (WM_MOUSEMOVE/button messages, and where
+      // SendInput's relative deltas actually land) by OS cursor screen
+      // position, independent of which window has keyboard focus. If the
+      // host's cursor happened to be left outside the target window's
+      // bounds from a previous session, every relative move Hunter sends
+      // keeps landing on whatever's under the cursor instead of the
+      // captured window -- input silently doing nothing there even though
+      // the window itself is focused. Recenter into the window on every
+      // (re)init so a fresh capture always starts with the cursor over it.
+      RECT window_rect;
+      if (GetWindowRect(window_target->hwnd, &window_rect)) {
+        SetCursorPos(
+          (window_rect.left + window_rect.right) / 2,
+          (window_rect.top + window_rect.bottom) / 2
+        );
+      }
+
       // agent.md section 7.7: notice when this window closes (most commonly
       // a launcher exiting once it has spawned the real game) so we can
       // recover instead of capturing a dead window forever.
