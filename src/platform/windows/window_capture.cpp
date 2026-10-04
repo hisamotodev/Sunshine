@@ -4,6 +4,10 @@
  */
 #include "window_capture.h"
 
+// platform includes
+#include <dwmapi.h>
+
+
 // standard includes
 #include <cwchar>
 #include <mutex>
@@ -90,6 +94,19 @@ namespace platf::dxgi::window_capture {
         return ctx.best;
       }
       return std::nullopt;
+    }
+
+    /**
+     * @brief DWM's extended frame bounds for `hwnd` -- see `title_bar_height()`
+     * and `capture_origin()`'s doc comments for why this (not `GetWindowRect`)
+     * is the rect WGC actually frames a window at.
+     */
+    std::optional<RECT> extended_frame_bounds(HWND hwnd) {
+      RECT bounds {};
+      if (FAILED(DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds)))) {
+        return std::nullopt;
+      }
+      return bounds;
     }
 
     /**
@@ -191,4 +208,25 @@ namespace platf::dxgi::window_capture {
     g_state = state_e::idle;
     detach_previous_worker_locked();
   }
+
+  int title_bar_height(HWND hwnd) {
+    // DwmGetWindowAttribute's extended frame bounds (not GetWindowRect,
+    // which on Win10+ includes an invisible resize-border pad WGC doesn't
+    // capture as visible content) gives the same top edge WGC frames a
+    // window at. ClientToScreen's mapped (0,0) gives the client area's
+    // actual top edge for this window's current style/DPI. The difference
+    // is exactly the caption (+ any visible border) height.
+    POINT client_origin {0, 0};
+    auto frame_bounds = extended_frame_bounds(hwnd);
+    if (!frame_bounds || !ClientToScreen(hwnd, &client_origin)) {
+      return 0;
+    }
+    auto height = client_origin.y - frame_bounds->top;
+    return height > 0 ? height : 0;
+  }
+
+  std::optional<RECT> frame_bounds(HWND hwnd) {
+    return extended_frame_bounds(hwnd);
+  }
+
 }  // namespace platf::dxgi::window_capture

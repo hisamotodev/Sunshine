@@ -1880,8 +1880,13 @@ namespace platf::dxgi {
     // the software-encoder sibling of this VRAM/hardware-encoder path --
     // already compares against width/height correctly; this brings the VRAM
     // path in line with it.
-    if (desc.Width != width || desc.Height != height) {
-      BOOST_LOG(info) << "Capture size changed ["sv << width << 'x' << height << " -> "sv << desc.Width << 'x' << desc.Height << ']';
+    // The source (desc) is WGC's uncropped window capture; `width`/`height`
+    // are the post-crop dimensions we report downstream, so add the cropped
+    // rows/columns back before comparing against the actual source texture
+    // (see wgc_capture_t::content_crop_top_/content_crop_side_'s doc
+    // comments in display.h).
+    if (desc.Width != width + 2 * dup.content_crop_side() || desc.Height != height + dup.content_crop_top() + dup.content_crop_side()) {
+      BOOST_LOG(info) << "Capture size changed ["sv << (width + 2 * dup.content_crop_side()) << 'x' << (height + dup.content_crop_top() + dup.content_crop_side()) << " -> "sv << desc.Width << 'x' << desc.Height << ']';
       return capture_e::reinit;
     }
 
@@ -1902,7 +1907,20 @@ namespace platf::dxgi {
     if (complete_img(d3d_img.get(), false) == 0) {
       texture_lock_helper lock_helper(d3d_img->capture_mutex.get());
       if (lock_helper.lock()) {
-        device_ctx->CopyResource(d3d_img->capture_texture.get(), src.get());
+        // Crop off the title bar rows/side columns content_crop_top()/
+        // content_crop_side() report (zero, i.e. a full copy, for a
+        // monitor-target capture) -- see wgc_capture_t::content_crop_top_/
+        // content_crop_side_'s doc comments in display.h.
+        D3D11_BOX crop_box {
+          (UINT) dup.content_crop_side(),
+          (UINT) dup.content_crop_top(),
+          0,
+          desc.Width - (UINT) dup.content_crop_side(),
+          desc.Height - (UINT) dup.content_crop_side(),
+          1
+        };
+        device_ctx->CopySubresourceRegion(d3d_img->capture_texture.get(), 0, 0, 0, 0, src.get(), 0, &crop_box);
+
       } else {
         BOOST_LOG(error) << "Failed to lock capture texture";
         return capture_e::error;

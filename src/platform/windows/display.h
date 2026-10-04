@@ -781,6 +781,32 @@ namespace platf::dxgi {
      */
     winrt::Windows::Graphics::SizeInt32 last_content_size {};
 
+    /**
+     * @brief Rows to skip from the top of the WGC source texture before
+     * copying into the (smaller) destination texture/image. Nonzero only for
+     * a window-target capture: WGC always captures a window's full bounding
+     * rect, title bar included, and cropping it out here (rather than
+     * stripping the target window's own WS_CAPTION style, which left it
+     * undraggable/unclosable on the host) keeps the real window fully
+     * operable locally while the stream itself never shows the title bar.
+     * `display->height`/`env_height` are set to the post-crop height in
+     * init(), so callers must add this back to get the actual WGC source
+     * texture's height for the "did the source size change" desc checks in
+     * display_wgc.cpp/display_vram.cpp's snapshot().
+     */
+    int content_crop_top_ = 0;
+
+    /**
+     * @brief Columns to skip from each side of the WGC source texture --
+     * see `window_capture::kWindowCaptureSideCropPx`'s doc comment. Nonzero
+     * only for a window-target capture, same as `content_crop_top_`.
+     * `display->width`/`env_width` are set to the post-crop width in init(),
+     * so callers must add `2 * content_crop_side_` back to get the actual
+     * WGC source texture's width for the "did the source size change" desc
+     * checks in display_wgc.cpp/display_vram.cpp's snapshot().
+     */
+    int content_crop_side_ = 0;
+
     void on_frame_arrived(winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &);
     void on_item_closed(winrt::Windows::Graphics::Capture::GraphicsCaptureItem const &sender, winrt::Windows::Foundation::IInspectable const &);
 
@@ -818,6 +844,23 @@ namespace platf::dxgi {
      * @return Zero when the cursor visibility state was accepted by the capture session.
      */
     int set_cursor_visible(bool cursor_visible);
+
+    /**
+     * @brief Rows cropped off the top of the WGC source texture (see
+     * content_crop_top_'s doc comment). Zero for a monitor-target capture.
+     */
+    int content_crop_top() const {
+      return content_crop_top_;
+    }
+
+    /**
+     * @brief Columns cropped off each side of the WGC source texture (see
+     * content_crop_side_'s doc comment). Zero for a monitor-target capture.
+     */
+    int content_crop_side() const {
+      return content_crop_side_;
+    }
+
   };
 
   /**

@@ -98,4 +98,54 @@ namespace platf::dxgi::window_capture {
    * `proc_t::terminate()` once the app itself has fully exited.
    */
   void clear();
+
+  /**
+   * @brief Rows of title bar (+ any visible top border) `wgc_capture_t::init()`
+   * (display_wgc.cpp) crops off a window-target capture, so the stream never
+   * shows one -- see its call site for why this crops the frame instead of
+   * stripping the real window's `WS_CAPTION` style. Also used by rtsp.cpp's
+   * capture-window resolution override so the `STREAM_CONFIGURATION` height
+   * it negotiates with the client matches what will actually be encoded;
+   * both call sites must agree or Hunter letterboxes the (shorter) real
+   * video inside a canvas sized for the window's full, uncropped height.
+   *
+   * @param hwnd The target window.
+   * @return The row count to crop, or 0 if it can't be determined (e.g. the
+   *         window has no non-client top area, or the DWM query failed).
+   */
+  int title_bar_height(HWND hwnd);
+
+  /**
+   * @brief The rect WGC actually frames a window-target capture at --
+   * `DwmGetWindowAttribute`'s extended frame bounds, not `GetWindowRect`,
+   * which on Win10+ includes an invisible resize-border pad (a handful of
+   * pixels per side) WGC's `GraphicsCaptureItem::Size()` never captures.
+   * nvhttp.cpp's remote-run-status endpoint and rtsp.cpp's capture-window
+   * resolution override both report a window's size to/for Hunter and must
+   * use this, not `GetWindowRect`, or the negotiated width comes out a few
+   * pixels wider than the real video -- seen live as thin black bars down
+   * both sides once `title_bar_height()`'s crop had already fixed the
+   * height to agree.
+   *
+   * @param hwnd The target window.
+   * @return The bounds, or `std::nullopt` if the DWM query failed.
+   */
+  std::optional<RECT> frame_bounds(HWND hwnd);
+
+  /**
+   * @brief Rows/columns still left over on the sides after `title_bar_height()`
+   * and `frame_bounds()` (DWM extended frame bounds, not `GetWindowRect`)
+   * already account for the invisible resize-border pad. Live testing found
+   * WGC's `GraphicsCaptureItem::Size()` for a window-target capture is
+   * consistently 1px narrower per side than `frame_bounds()`'s width across
+   * every app tried, root cause unconfirmed (docs/research's other
+   * unconfirmed-root-cause driver quirks on this dev machine) -- rather than
+   * keep chasing it, crop this fixed, small amount off both sides
+   * everywhere a window-target capture's width is computed (display_wgc.cpp's
+   * crop, and nvhttp.cpp/rtsp.cpp's negotiated width), so all three still
+   * agree with each other even though none of them measure the real
+   * WGC-captured width exactly.
+   */
+  constexpr int kWindowCaptureSideCropPx = 3;
+
 }  // namespace platf::dxgi::window_capture

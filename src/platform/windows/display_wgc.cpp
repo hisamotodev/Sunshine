@@ -2,6 +2,9 @@
  * @file src/platform/windows/display_wgc.cpp
  * @brief Definitions for WinRT Windows.Graphics.Capture API
  */
+// standard includes
+#include <algorithm>
+
 // platform includes
 #include <dxgi1_2.h>
 
@@ -155,8 +158,32 @@ namespace platf::dxgi {
       // already handled in on_frame_arrived() below. See
       // docs/research/poc3-titan-hwnd-capture.md.
       auto captured_size = item.Size();
-      display->width = display->width_before_rotation = display->env_width = captured_size.Width;
-      display->height = display->height_before_rotation = display->env_height = captured_size.Height;
+
+      // WGC always captures a window's full bounding rect, title bar
+      // included -- there's no sub-rect capture option. Rather than
+      // stripping the target window's own WS_CAPTION style (which left the
+      // real window undraggable/unclosable on the host, see
+      // window_capture.cpp's history), crop the top `content_crop_top_` rows
+      // off after capture and only report the shorter height downstream, so
+      // the stream never shows a title bar while the real window stays
+      // fully operable locally. rtsp.cpp's capture-window resolution
+      // override must crop by this same amount when it negotiates
+      // STREAM_CONFIGURATION's height, or Hunter letterboxes this shorter
+      // video inside a canvas sized for the window's full height.
+      content_crop_top_ = std::min<int>(window_capture::title_bar_height(window_target->hwnd), captured_size.Height - 1);
+
+      // window_capture::kWindowCaptureSideCropPx's doc comment: a fixed,
+      // small per-side crop for a gap between frame_bounds()'s width and
+      // what WGC actually captures, found consistent across every app tried
+      // in live testing.
+      content_crop_side_ = std::min<int>(window_capture::kWindowCaptureSideCropPx, (captured_size.Width - 1) / 2);
+
+      display->width = display->width_before_rotation = display->env_width = captured_size.Width - 2 * content_crop_side_;
+      // content_crop_side_'s gap turned out to run along the bottom edge
+      // too, not just left/right -- title_bar_height()'s much larger crop
+      // already happens to swallow the same gap at the top, which is why
+      // only the other three edges ever showed it in live testing.
+      display->height = display->height_before_rotation = display->env_height = captured_size.Height - content_crop_top_ - content_crop_side_;
       display->offset_x = 0;
       display->offset_y = 0;
 
@@ -397,8 +424,13 @@ namespace platf::dxgi {
 
     // It's possible for our display enumeration to race with mode changes and result in
     // mismatched image pool and desktop texture sizes. If this happens, just reinit again.
-    if (desc.Width != width || desc.Height != height) {
-      BOOST_LOG(info) << "Capture size changed ["sv << width << 'x' << height << " -> "sv << desc.Width << 'x' << desc.Height << ']';
+    // The source (desc) is WGC's uncropped window capture; `width`/`height`
+    // are the post-crop dimensions we report downstream, so add the cropped
+    // rows/columns back before comparing against the actual source texture
+    // (see wgc_capture_t::content_crop_top_/content_crop_side_'s doc
+    // comments in display.h).
+    if (desc.Width != width + 2 * dup.content_crop_side() || desc.Height != height + dup.content_crop_top() + dup.content_crop_side()) {
+      BOOST_LOG(info) << "Capture size changed ["sv << (width + 2 * dup.content_crop_side()) << 'x' << (height + dup.content_crop_top() + dup.content_crop_side()) << " -> "sv << desc.Width << 'x' << desc.Height << ']';
       return capture_e::reinit;
     }
     // It's also possible for the capture format to change on the fly. If that happens,
@@ -408,8 +440,18 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
-    // Copy from GPU to CPU
-    device_ctx->CopyResource(texture.get(), src.get());
+    // Copy from GPU to CPU, cropping off the title bar rows/side columns/
+    // bottom row content_crop_top()/content_crop_side() report (zero, i.e.
+    // a full copy, for a monitor-target capture).
+    D3D11_BOX crop_box {
+      (UINT) dup.content_crop_side(),
+      (UINT) dup.content_crop_top(),
+      0,
+      desc.Width - (UINT) dup.content_crop_side(),
+      desc.Height - (UINT) dup.content_crop_side(),
+      1
+    };
+    device_ctx->CopySubresourceRegion(texture.get(), 0, 0, 0, 0, src.get(), 0, &crop_box);
 
     if (!pull_free_image_cb(img_out)) {
       return capture_e::interrupted;

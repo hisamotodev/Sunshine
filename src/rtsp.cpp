@@ -13,6 +13,7 @@ extern "C" {
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <format>
 #include <set>
 #include <thread>
@@ -1251,15 +1252,42 @@ namespace rtsp_stream {
       }
 
       if (auto target = platf::dxgi::window_capture::resolved_target()) {
-        RECT rect {};
-        if (GetWindowRect(target->hwnd, &rect)) {
-          int window_width = (rect.right - rect.left) & ~0x1;
-          int window_height = (rect.bottom - rect.top) & ~0x1;
+        // frame_bounds(), not GetWindowRect -- see its doc comment for why
+        // GetWindowRect's invisible resize-border pad made this come out a
+        // few pixels wider/taller than what WGC (and therefore the actual
+        // encoded video) captures.
+        if (auto rect = platf::dxgi::window_capture::frame_bounds(target->hwnd)) {
+          // wgc_capture_t::init() (display_wgc.cpp) crops this many rows of
+          // title bar off the actual encoded video (content_crop_top_'s doc
+          // comment there) so the stream never shows one; the negotiated
+          // height must match or Hunter letterboxes the shorter real video
+          // inside a canvas sized for the window's full height.
+          auto crop = platf::dxgi::window_capture::title_bar_height(target->hwnd);
+          // The further kWindowCaptureSideCropPx subtraction is a fixed
+          // fudge for a small, consistent leftover gap between
+          // frame_bounds() and what WGC actually captures -- see its doc
+          // comment.
+          int window_width = (rect->right - rect->left - 2 * platf::dxgi::window_capture::kWindowCaptureSideCropPx) & ~0x1;
+          // The same gap runs along the bottom edge too, not just left/right
+          // -- title_bar_height()'s crop already swallows it at the top.
+          int window_height = (rect->bottom - rect->top - crop - platf::dxgi::window_capture::kWindowCaptureSideCropPx) & ~0x1;
           BOOST_LOG(info) << "Capture-window resolution check: requested ["sv << config.monitor.width << 'x'
                            << config.monitor.height << "], actual window ["sv << window_width << 'x'
                            << window_height << ']';
+          // A remote-run client already learned this window's size from
+          // Titan's own remote-run-status endpoint (nvhttp.cpp) before
+          // requesting this resolution, so a fresh re-measurement here can
+          // land a couple pixels off just from GetWindowRect() being called
+          // at a slightly different moment -- not a real size change to
+          // react to. Only override for a genuine mismatch (a client that
+          // requested its StreamingPreferences default because it skipped
+          // that flow, or a real resize since then), not measurement noise:
+          // live testing found +-1-3px between the two call sites even with
+          // an already-stable window.
+          constexpr int kResolutionNoiseTolerancePx = 8;
           if (window_width > 0 && window_height > 0 &&
-              (window_width != config.monitor.width || window_height != config.monitor.height)) {
+              (std::abs(window_width - config.monitor.width) > kResolutionNoiseTolerancePx ||
+               std::abs(window_height - config.monitor.height) > kResolutionNoiseTolerancePx)) {
             BOOST_LOG(info) << "Overriding requested resolution ["sv << config.monitor.width << 'x'
                              << config.monitor.height << "] with capture-window size ["sv << window_width
                              << 'x' << window_height << ']';

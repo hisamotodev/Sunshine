@@ -1647,28 +1647,82 @@ namespace nvhttp {
     }
 
 #ifdef _WIN32
+    // Some apps' loading screen hands off to a differently-sized main
+    // window shortly after the window is first found (agent.md section
+    // 11.5 / live testing) -- report the resolved size only once
+    // GetWindowRect agrees across two consecutive polls (Hunter polls this
+    // endpoint roughly once a second via waitForCaptureWindowReady()), so
+    // this response and rtsp.cpp's later, independent ANNOUNCE-time
+    // re-measurement see the same settled size. Two mid-resize snapshots a
+    // poll apart previously agreed on height (both already reflected the
+    // title-bar crop) but could still disagree on width by a few pixels,
+    // seen live as a thin black bar down one or both sides.
+    static std::mutex stability_mutex;
+    static HWND stable_hwnd = nullptr;
+    static int stable_width = -1;
+    static int stable_height = -1;
+    static bool size_confirmed = false;
+
+    auto target = platf::dxgi::window_capture::resolved_target();
+    {
+      std::lock_guard lock(stability_mutex);
+      if (!target) {
+        stable_hwnd = nullptr;
+        size_confirmed = false;
+      } else {
+        // frame_bounds(), not GetWindowRect -- see its doc comment for why
+        // GetWindowRect's invisible resize-border pad made the negotiated
+        // width a few pixels wider than the real captured video. The
+        // further kWindowCaptureSideCropPx subtraction is a fixed fudge for
+        // a small, consistent leftover gap between frame_bounds() and what
+        // WGC actually captures -- see its doc comment.
+        if (auto rect = platf::dxgi::window_capture::frame_bounds(target->hwnd)) {
+          int width = rect->right - rect->left - 2 * platf::dxgi::window_capture::kWindowCaptureSideCropPx;
+          // The same gap runs along the bottom edge too, not just left/right
+          // -- title_bar_height() already crops enough off the top to
+          // swallow it there.
+          int height = rect->bottom - rect->top - platf::dxgi::window_capture::title_bar_height(target->hwnd) - platf::dxgi::window_capture::kWindowCaptureSideCropPx;
+          if (target->hwnd != stable_hwnd || width != stable_width || height != stable_height) {
+            stable_hwnd = target->hwnd;
+            stable_width = width;
+            stable_height = height;
+            size_confirmed = false;
+          } else {
+            size_confirmed = true;
+          }
+        }
+      }
+    }
+
     switch (platf::dxgi::window_capture::resolution_state()) {
       case platf::dxgi::window_capture::state_e::ready:
+        if (!target) {
+          output_tree["state"] = "starting";
+          break;
+        }
+        if (!size_confirmed) {
+          // Window found, but its size hasn't held steady across two
+          // consecutive polls yet -- keep Hunter's
+          // waitForCaptureWindowReady() looping instead of reporting a size
+          // that may still be mid-resize.
+          output_tree["state"] = "starting";
+          break;
+        }
+
         output_tree["state"] = "ready";
         // agent.md section 11.5 / issue found in live testing: report the
         // resolved window's real size so Hunter can size its stream/client
         // window to match, instead of stretching the app's actual content
         // into whatever resolution the client happened to request before
-        // this app's window existed. GetWindowRect (full window bounds,
-        // decorations included) is what WGC's window-target capture
-        // actually captures -- an approximation of item.Size(), which isn't
-        // queryable here since no capture session is running yet.
-        if (auto target = platf::dxgi::window_capture::resolved_target()) {
-          RECT rect {};
-          if (GetWindowRect(target->hwnd, &rect)) {
-            output_tree["width"] = rect.right - rect.left;
-            output_tree["height"] = rect.bottom - rect.top;
-          }
+        // this app's window existed.
+        output_tree["width"] = stable_width;
+        output_tree["height"] = stable_height;
 
-          // Read live so a title change after the window first appeared
-          // (e.g. a loading screen finishing, a browser's active tab
-          // changing) is picked up by Hunter's poll, not just the initial
-          // resolution.
+        // Read live so a title change after the window first appeared
+        // (e.g. a loading screen finishing, a browser's active tab
+        // changing) is picked up by Hunter's poll, not just the initial
+        // resolution.
+        {
           wchar_t title_buf[256] {};
           GetWindowTextW(target->hwnd, title_buf, ARRAYSIZE(title_buf));
           output_tree["window_title"] = utf_utils::to_utf8(title_buf);
