@@ -807,6 +807,15 @@ namespace platf::dxgi {
      */
     int content_crop_side_ = 0;
 
+    /**
+     * @brief Tracks how long the *same* mismatched size has been reported by
+     * `resize_settled()`'s caller, to debounce a live drag-resize. See that
+     * method's doc comment.
+     */
+    std::chrono::steady_clock::time_point pending_resize_since_ {};
+    int pending_resize_width_ = -1;  ///< -1: no mismatch currently pending.
+    int pending_resize_height_ = -1;
+
     void on_frame_arrived(winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const &sender, winrt::Windows::Foundation::IInspectable const &);
     void on_item_closed(winrt::Windows::Graphics::Capture::GraphicsCaptureItem const &sender, winrt::Windows::Foundation::IInspectable const &);
 
@@ -861,6 +870,29 @@ namespace platf::dxgi {
       return content_crop_side_;
     }
 
+    /**
+     * @brief Debounces the reinit a source-texture size mismatch would
+     * otherwise trigger immediately in `display_wgc_ram_t`/`display_wgc_vram_t`
+     * `snapshot()`. Live testing: dragging a window's edge fires dozens of
+     * WGC content-size-changed events a second, and reiniting (full NVENC
+     * encoder + capture session teardown/rebuild) on every single one froze
+     * the stream mid-drag. Call this from snapshot()'s desc-mismatch branch
+     * instead of returning `capture_e::reinit` directly -- it returns `true`
+     * (commit to reiniting) only once `desc_width`/`desc_height` has held
+     * steady for `settle_time`, so a drag settles into exactly one reinit
+     * once the user stops resizing, rather than dozens mid-drag. Returns
+     * `false` (skip this frame; caller should return `capture_e::timeout`)
+     * while still settling.
+     */
+    bool resize_settled(int desc_width, int desc_height, std::chrono::milliseconds settle_time = std::chrono::milliseconds(300)) {
+      if (desc_width != pending_resize_width_ || desc_height != pending_resize_height_) {
+        pending_resize_width_ = desc_width;
+        pending_resize_height_ = desc_height;
+        pending_resize_since_ = std::chrono::steady_clock::now();
+        return false;
+      }
+      return std::chrono::steady_clock::now() - pending_resize_since_ >= settle_time;
+    }
   };
 
   /**

@@ -1886,6 +1886,13 @@ namespace platf::dxgi {
     // (see wgc_capture_t::content_crop_top_/content_crop_side_'s doc
     // comments in display.h).
     if (desc.Width != width + 2 * dup.content_crop_side() || desc.Height != height + dup.content_crop_top() + dup.content_crop_side()) {
+      // See wgc_capture_t::resize_settled()'s doc comment: a live drag-resize
+      // fires many of these mismatches a second, and reiniting on every one
+      // froze the stream mid-drag in live testing -- only commit once the
+      // mismatched size has held steady for a bit.
+      if (!dup.resize_settled(desc.Width, desc.Height)) {
+        return capture_e::timeout;
+      }
       BOOST_LOG(info) << "Capture size changed ["sv << (width + 2 * dup.content_crop_side()) << 'x' << (height + dup.content_crop_top() + dup.content_crop_side()) << " -> "sv << desc.Width << 'x' << desc.Height << ']';
       return capture_e::reinit;
     }
