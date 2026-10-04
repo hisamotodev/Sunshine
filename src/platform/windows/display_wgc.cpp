@@ -4,6 +4,7 @@
  */
 // standard includes
 #include <algorithm>
+#include <cstring>
 
 // platform includes
 #include <dxgi1_2.h>
@@ -186,6 +187,13 @@ namespace platf::dxgi {
       display->height = display->height_before_rotation = display->env_height = captured_size.Height - content_crop_top_ - content_crop_side_;
       display->offset_x = 0;
       display->offset_y = 0;
+
+      // Popup-compositing support (window_capture.h's
+      // capture_owned_window_overlays()) -- the RAM/VRAM snapshot() overrides
+      // read these back every frame.
+      target_hwnd_ = window_target->hwnd;
+      capture_origin_ = window_capture::capture_origin(window_target->hwnd, content_crop_top_);
+      capture_origin_.x += content_crop_side_;
 
       // Win32 routes mouse input (WM_MOUSEMOVE/button messages, and where
       // SendInput's relative deltas actually land) by OS cursor screen
@@ -496,11 +504,31 @@ namespace platf::dxgi {
       return capture_e::error;
     }
 
-    std::copy_n((std::uint8_t *) img_info.pData, height * img_info.RowPitch, (std::uint8_t *) img->data);
+    auto row_pitch = img_info.RowPitch;
+    std::copy_n((std::uint8_t *) img_info.pData, height * row_pitch, (std::uint8_t *) img->data);
 
     // Unmap the staging texture to allow GPU access again
     device_ctx->Unmap(texture.get(), 0);
     img_info.pData = nullptr;
+
+    // window_capture.h: WGC's per-window capture only composites the target
+    // window's own DWM surface -- paint owned popups (VLC's fullscreen
+    // toolbar controller, context menus, combo-box dropdowns) back in here,
+    // CPU side, directly into the frame buffer just copied above. Only
+    // supported for the 8-bit BGRA capture format (the non-HDR default,
+    // display_wgc.cpp's init()); an HDR stream's FP16 texture would need a
+    // linear-space conversion this skips for now.
+    if (auto target = dup.target_hwnd(); target && capture_format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+      for (auto &region : window_capture::capture_owned_window_overlays(target, dup.capture_origin(), width, height)) {
+        for (int row = 0; row < region.height; ++row) {
+          std::memcpy(
+            (std::uint8_t *) img->data + (std::size_t) (region.y + row) * row_pitch + (std::size_t) region.x * 4,
+            region.bgra.data() + (std::size_t) row * region.width * 4,
+            (std::size_t) region.width * 4
+          );
+        }
+      }
+    }
 
     if (img) {
       img->frame_timestamp = frame_timestamp;

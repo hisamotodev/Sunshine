@@ -27,6 +27,7 @@ extern "C" {
 #include "src/nvenc/nvenc_dynamic_factory.h"
 #include "src/video.h"
 #include "utf_utils.h"
+#include "window_capture.h"
 
 #if !defined(SUNSHINE_SHADERS_DIR)  // for testing this needs to be defined in cmake as we don't do an install
   /**
@@ -1928,6 +1929,27 @@ namespace platf::dxgi {
         };
         device_ctx->CopySubresourceRegion(d3d_img->capture_texture.get(), 0, 0, 0, 0, src.get(), 0, &crop_box);
 
+        // window_capture.h: paint owned popups (VLC's fullscreen toolbar
+        // controller, context menus, combo-box dropdowns) back into the
+        // capture texture -- see display_wgc_ram_t::snapshot()'s sibling
+        // comment (display_wgc.cpp) for why WGC misses them on its own.
+        // capture_texture is D3D11_USAGE_DEFAULT (display_vram.cpp's
+        // complete_img()), so a direct UpdateSubresource is valid while
+        // still holding the keyed mutex here. Only the 8-bit BGRA capture
+        // format is supported, same limitation as the RAM path.
+        if (auto target = dup.target_hwnd(); target && capture_format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+          for (auto &region : window_capture::capture_owned_window_overlays(target, dup.capture_origin(), width, height)) {
+            D3D11_BOX dest_box {
+              (UINT) region.x,
+              (UINT) region.y,
+              0,
+              (UINT) (region.x + region.width),
+              (UINT) (region.y + region.height),
+              1
+            };
+            device_ctx->UpdateSubresource(d3d_img->capture_texture.get(), 0, &dest_box, region.bgra.data(), (UINT) region.width * 4, 0);
+          }
+        }
       } else {
         BOOST_LOG(error) << "Failed to lock capture texture";
         return capture_e::error;

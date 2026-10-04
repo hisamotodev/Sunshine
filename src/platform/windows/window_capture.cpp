@@ -9,6 +9,8 @@
 
 
 // standard includes
+#include <algorithm>
+#include <cstring>
 #include <cwchar>
 #include <mutex>
 #include <set>
@@ -107,6 +109,99 @@ namespace platf::dxgi::window_capture {
         return std::nullopt;
       }
       return bounds;
+    }
+
+    /**
+     * @brief `EnumWindows` callback: collects every visible top-level window
+     * whose owner chain (`GA_ROOTOWNER`) leads back to `ctx->target`, e.g.
+     * a context menu, combo-box dropdown, or VLC's fullscreen toolbar
+     * controller. Unlike `enum_windows_proc` above, this does not stop at
+     * the first match -- a target can have more than one owned popup open
+     * at once.
+     */
+    struct owned_enum_ctx_t {
+      HWND target;
+      std::vector<HWND> *out;
+    };
+
+    BOOL CALLBACK enum_owned_windows_proc(HWND hwnd, LPARAM lparam) {
+      auto *ctx = reinterpret_cast<owned_enum_ctx_t *>(lparam);
+
+      if (hwnd == ctx->target || !IsWindowVisible(hwnd)) {
+        return TRUE;
+      }
+      if (GetAncestor(hwnd, GA_ROOTOWNER) != ctx->target) {
+        return TRUE;
+      }
+
+      RECT rect;
+      if (!GetWindowRect(hwnd, &rect) || rect.right <= rect.left || rect.bottom <= rect.top) {
+        return TRUE;
+      }
+
+      ctx->out->push_back(hwnd);
+      return TRUE;
+    }
+
+    /**
+     * @brief GDI `PrintWindow` capture of a single window into a top-down
+     * 32bpp BGRA buffer sized to `rect` (a `GetWindowRect()` result).
+     */
+    struct raw_capture_t {
+      int width = 0;
+      int height = 0;
+      std::vector<std::uint8_t> bgra;
+    };
+
+    std::optional<raw_capture_t> print_window(HWND hwnd, const RECT &rect) {
+      int w = rect.right - rect.left;
+      int h = rect.bottom - rect.top;
+      if (w <= 0 || h <= 0) {
+        return std::nullopt;
+      }
+
+      HDC screen_dc = GetDC(nullptr);
+      if (!screen_dc) {
+        return std::nullopt;
+      }
+      HDC mem_dc = CreateCompatibleDC(screen_dc);
+      ReleaseDC(nullptr, screen_dc);
+      if (!mem_dc) {
+        return std::nullopt;
+      }
+
+      BITMAPINFO bmi {};
+      bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+      bmi.bmiHeader.biWidth = w;
+      bmi.bmiHeader.biHeight = -h;  // top-down
+      bmi.bmiHeader.biPlanes = 1;
+      bmi.bmiHeader.biBitCount = 32;
+      bmi.bmiHeader.biCompression = BI_RGB;
+
+      void *bits = nullptr;
+      HBITMAP bitmap = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+      if (!bitmap) {
+        DeleteDC(mem_dc);
+        return std::nullopt;
+      }
+      HGDIOBJ old_bitmap = SelectObject(mem_dc, bitmap);
+
+      BOOL ok = PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT);
+
+      std::optional<raw_capture_t> result;
+      if (ok) {
+        raw_capture_t capture;
+        capture.width = w;
+        capture.height = h;
+        capture.bgra.resize(static_cast<std::size_t>(w) * h * 4);
+        std::memcpy(capture.bgra.data(), bits, capture.bgra.size());
+        result = std::move(capture);
+      }
+
+      SelectObject(mem_dc, old_bitmap);
+      DeleteObject(bitmap);
+      DeleteDC(mem_dc);
+      return result;
     }
 
     /**
@@ -252,4 +347,77 @@ namespace platf::dxgi::window_capture {
     return extended_frame_bounds(hwnd);
   }
 
+  POINT capture_origin(HWND hwnd, int content_crop_top) {
+    auto frame_bounds = extended_frame_bounds(hwnd);
+    if (!frame_bounds) {
+      return POINT {0, 0};
+    }
+    return POINT {frame_bounds->left, frame_bounds->top + content_crop_top};
+  }
+
+  std::vector<overlay_region_t> capture_owned_window_overlays(HWND target, POINT origin, int frame_width, int frame_height) {
+    std::vector<overlay_region_t> result;
+    if (!target || frame_width <= 0 || frame_height <= 0) {
+      return result;
+    }
+
+    std::vector<HWND> owned;
+    owned_enum_ctx_t ctx {target, &owned};
+    EnumWindows(enum_owned_windows_proc, reinterpret_cast<LPARAM>(&ctx));
+    if (owned.empty()) {
+      return result;
+    }
+
+    // EnumWindows visits top-level windows in Z-order, topmost first; paint
+    // back-to-front here so a genuinely topmost popup still ends up on top
+    // once the caller composites this list in order.
+    std::reverse(owned.begin(), owned.end());
+
+    for (HWND hwnd : owned) {
+      RECT rect;
+      if (!GetWindowRect(hwnd, &rect)) {
+        continue;
+      }
+
+      // Translate to frame-local coordinates, then clip to the frame -- a
+      // popup can legitimately extend past the target window's edges (most
+      // dropdowns/context menus do).
+      int local_left = rect.left - origin.x;
+      int local_top = rect.top - origin.y;
+      int local_right = rect.right - origin.x;
+      int local_bottom = rect.bottom - origin.y;
+
+      int clip_left = std::max(local_left, 0);
+      int clip_top = std::max(local_top, 0);
+      int clip_right = std::min(local_right, frame_width);
+      int clip_bottom = std::min(local_bottom, frame_height);
+      if (clip_right <= clip_left || clip_bottom <= clip_top) {
+        continue;  // fully off-frame
+      }
+
+      auto raw = print_window(hwnd, rect);
+      if (!raw) {
+        continue;
+      }
+
+      overlay_region_t region;
+      region.x = clip_left;
+      region.y = clip_top;
+      region.width = clip_right - clip_left;
+      region.height = clip_bottom - clip_top;
+      region.bgra.resize(static_cast<std::size_t>(region.width) * region.height * 4);
+
+      int src_x_offset = clip_left - local_left;
+      int src_y_offset = clip_top - local_top;
+      for (int row = 0; row < region.height; ++row) {
+        const auto *src_row = raw->bgra.data() + static_cast<std::size_t>(src_y_offset + row) * raw->width * 4 + static_cast<std::size_t>(src_x_offset) * 4;
+        auto *dst_row = region.bgra.data() + static_cast<std::size_t>(row) * region.width * 4;
+        std::memcpy(dst_row, src_row, static_cast<std::size_t>(region.width) * 4);
+      }
+
+      result.push_back(std::move(region));
+    }
+
+    return result;
+  }
 }  // namespace platf::dxgi::window_capture

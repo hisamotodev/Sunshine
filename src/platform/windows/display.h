@@ -808,6 +808,24 @@ namespace platf::dxgi {
     int content_crop_side_ = 0;
 
     /**
+     * @brief The resolved window-target HWND, or `nullptr` for a
+     * monitor-target capture. Set once in init(); handed to
+     * `window_capture::capture_owned_window_overlays()` every frame by the
+     * RAM/VRAM `snapshot()` overrides so popups owned by this window (VLC's
+     * fullscreen toolbar controller, context menus, combo-box dropdowns --
+     * see window_capture.h) get composited back into the stream, since
+     * WGC's own per-window capture never includes them.
+     */
+    HWND target_hwnd_ = nullptr;
+
+    /**
+     * @brief `window_capture::capture_origin()`'s result for `target_hwnd_`,
+     * computed once in init() alongside `content_crop_top_`. `{0, 0}` when
+     * `target_hwnd_` is null.
+     */
+    POINT capture_origin_ {0, 0};
+
+    /**
      * @brief Tracks how long the *same* mismatched size has been reported by
      * `resize_settled()`'s caller, to debounce a live drag-resize. See that
      * method's doc comment.
@@ -868,6 +886,23 @@ namespace platf::dxgi {
      */
     int content_crop_side() const {
       return content_crop_side_;
+    }
+
+    /**
+     * @brief The resolved window-target HWND, or `nullptr` for a
+     * monitor-target capture (see `target_hwnd_`'s doc comment).
+     */
+    HWND target_hwnd() const {
+      return target_hwnd_;
+    }
+
+    /**
+     * @brief Screen-coordinate origin of this capture's frame-local (0,0)
+     * (see `capture_origin_`'s doc comment). Only meaningful when
+     * `target_hwnd()` is non-null.
+     */
+    POINT capture_origin() const {
+      return capture_origin_;
     }
 
     /**

@@ -19,9 +19,11 @@
 // standard includes
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 // platform includes
 #include <Windows.h>
@@ -148,4 +150,59 @@ namespace platf::dxgi::window_capture {
    */
   constexpr int kWindowCaptureSideCropPx = 3;
 
+  /**
+   * @brief Screen-coordinate point that maps to a window-target capture
+   * frame's local (0,0), i.e. after `title_bar_height()`'s rows have been
+   * cropped off -- the DWM extended frame bounds' left edge and the window's
+   * client-area top edge. `wgc_capture_t::init()` computes this once per
+   * (re)init (`display_wgc.cpp`) and hands it to
+   * `capture_owned_window_overlays()` every frame to translate other
+   * windows' `GetWindowRect()` screen coordinates into the capture's local
+   * space.
+   *
+   * @param hwnd The target window.
+   * @param content_crop_top The value `title_bar_height(hwnd)` returned
+   *        (post-clamping, as actually applied by the caller).
+   * @return The origin point, or {0, 0} if the DWM query fails.
+   */
+  POINT capture_origin(HWND hwnd, int content_crop_top);
+
+  /**
+   * @brief One popup window's content, already translated and clipped into
+   * a window-target capture frame's local coordinate space, ready to blit.
+   */
+  struct overlay_region_t {
+    int x = 0;  ///< Local x offset, clamped to [0, frame_width).
+    int y = 0;  ///< Local y offset, clamped to [0, frame_height).
+    int width = 0;  ///< Clipped width in pixels (> 0).
+    int height = 0;  ///< Clipped height in pixels (> 0).
+    std::vector<std::uint8_t> bgra;  ///< `width * height * 4` bytes, top-down, B-G-R-A/X per pixel.
+  };
+
+  /**
+   * @brief Captures every currently visible popup window owned by `target`
+   * and returns them ready to composite into a captured frame, back-to-front
+   * (paint in list order).
+   *
+   * WGC's per-window capture (`wgc_capture_t`/`CreateForWindow`) only
+   * composites `target`'s own DWM surface -- a transient popup implemented
+   * as its own top-level window (VLC's fullscreen toolbar controller, most
+   * context menus, combo-box dropdowns) never appears on its own. This is
+   * the compositing half of that workaround: `capture_wgc.cpp`'s RAM/VRAM
+   * snapshot() paths call this once per frame and paint the results back in.
+   *
+   * Uses GDI `PrintWindow`, not a second WGC session, since spinning up a
+   * `Direct3D11CaptureFramePool` per transient popup is unnecessary
+   * complexity for small, usually GDI/Qt-raster overlay windows. If a
+   * captured overlay ever comes back solid black, that's `PrintWindow`'s
+   * known flip-model-swapchain limitation (see
+   * docs/research/poc3-titan-hwnd-capture.md) hitting a D3D-presented popup,
+   * not a bug here.
+   *
+   * @param target The resolved capture target (`wgc_capture_t::target_hwnd()`).
+   * @param origin `capture_origin(target, content_crop_top)`'s result.
+   * @param frame_width Post-crop capture width results are clipped to.
+   * @param frame_height Post-crop capture height results are clipped to.
+   */
+  std::vector<overlay_region_t> capture_owned_window_overlays(HWND target, POINT origin, int frame_width, int frame_height);
 }  // namespace platf::dxgi::window_capture
